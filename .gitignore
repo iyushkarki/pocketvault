@@ -1,1 +1,7 @@
-docs
+*.dmg
+docs/pocketvault.app
+
+# Xcode user data
+xcuserdata/
+**/xcschememanagement.plist
+*.xcuserstate

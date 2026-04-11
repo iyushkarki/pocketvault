@@ -67,9 +67,8 @@ private struct GeneralSettingsView: View {
             Button("Restart Now") {
                 restartApp()
             }
-            Button("Later", role: .cancel) {}
         } message: {
-            Text("Pocket Vault needs to restart to apply sync changes. Restart now?")
+            Text("Pocket Vault needs to restart to apply sync changes.")
         }
         .alert("Sync Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) {}
@@ -146,13 +145,16 @@ private struct GeneralSettingsView: View {
     }
 
     private func restartApp() {
-        let url = URL(fileURLWithPath: Bundle.main.resourcePath!)
-        let path = url.deletingLastPathComponent().deletingLastPathComponent().path
-        let task = Process()
-        task.launchPath = "/usr/bin/open"
-        task.arguments = [path]
-        task.launch()
-        NSApp.terminate(nil)
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: config
+        ) { _, _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NSApp.terminate(nil)
+            }
+        }
     }
 }
 
@@ -165,6 +167,7 @@ private struct SecuritySettingsView: View {
     @State private var showDeleteConfirmation = false
     @State private var showFinalDeleteConfirmation = false
     @State private var isDeleting = false
+    @State private var showWipeRestartAlert = false
     @State private var wipeError: String?
     @State private var showWipeErrorAlert = false
 
@@ -234,7 +237,7 @@ private struct SecuritySettingsView: View {
                 showFinalDeleteConfirmation = true
             }
         } message: {
-            Text("This will permanently delete all projects, files, entries, and stored secrets from this device. This cannot be undone.")
+            Text("This will permanently delete all projects, files, entries, and stored secrets from this device and iCloud Keychain. This cannot be undone.")
         }
         .alert("Are you absolutely sure?", isPresented: $showFinalDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
@@ -242,12 +245,32 @@ private struct SecuritySettingsView: View {
                 performSecureWipe()
             }
         } message: {
-            Text("All data will be permanently erased. Export a backup first if you want to keep your data.")
+            Text("All data will be permanently erased from this device and iCloud Keychain. Export a backup first if you want to keep your data.")
         }
         .alert("Delete Failed", isPresented: $showWipeErrorAlert, presenting: wipeError) { _ in
             Button("OK") { wipeError = nil }
         } message: { message in
             Text(message)
+        }
+        .alert("All Data Deleted", isPresented: $showWipeRestartAlert) {
+            Button("Restart Now") {
+                restartApp()
+            }
+        } message: {
+            Text("All data has been erased. Pocket Vault will now restart.")
+        }
+    }
+
+    private func restartApp() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: config
+        ) { _, _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -287,6 +310,7 @@ private struct SecuritySettingsView: View {
 
         logger.warning("Secure data wipe completed")
         isDeleting = false
+        showWipeRestartAlert = true
     }
 }
 

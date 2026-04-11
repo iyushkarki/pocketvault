@@ -1,8 +1,22 @@
 # Pocket Vault
 
+> **Beta:** This is a pre-release build. Expect rough edges. Please [report issues](https://github.com/anomalyco/pocketvault/issues).
+
 A native macOS menu bar app for securely managing `.env` environment variables.
 
 Secrets are stored in the macOS Keychain (hardware-backed AES-256 encryption on Apple Silicon). Metadata syncs across devices via iCloud. Zero third-party dependencies.
+
+---
+
+## Download
+
+**[Download PocketVault-1.0.0.dmg](https://github.com/anomalyco/pocketvault/releases/tag/v1.0.0-beta.1)**
+
+Requires macOS 15.6 or later. Notarized by Apple.
+
+1. Open the `.dmg` and drag Pocket Vault to Applications.
+2. Launch from Applications or Spotlight — the app lives in your menu bar.
+3. On first launch, complete the short onboarding to set up your vault.
 
 ---
 

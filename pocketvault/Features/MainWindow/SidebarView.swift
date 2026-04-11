@@ -4,6 +4,7 @@ import SwiftData
 struct SidebarView: View {
     @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
     @Environment(\.modelContext) private var modelContext
+    @Environment(SyncService.self) private var syncService
     @Binding var selectedFile: EnvFile?
     let viewModel: EnvEditorViewModel
 
@@ -35,6 +36,7 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(AppTheme.textSecondary)
                 Spacer()
+                SyncStatusIndicator()
             }
             .padding(.horizontal, AppTheme.Spacing.md)
             .padding(.vertical, AppTheme.Spacing.sm)
