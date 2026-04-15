@@ -26,7 +26,8 @@ struct MainWindowView: View {
         if let lastExport {
             return Date().timeIntervalSince(lastExport) > 30 * 24 * 60 * 60
         }
-        return true
+        UserDefaults.standard.set(Date(), forKey: AppConfig.UserDefaultsKey.lastVaultExportDate)
+        return false
     }
 
     var body: some View {

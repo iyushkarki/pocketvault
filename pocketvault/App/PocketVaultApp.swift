@@ -7,6 +7,7 @@ struct PocketVaultApp: App {
     @State private var lockManager = LockManager()
     @State private var biometricService = BiometricService()
     @State private var syncService = SyncService()
+    @AppStorage(AppConfig.UserDefaultsKey.hasCompletedOnboarding) private var hasCompletedOnboarding = AppConfig.Defaults.hasCompletedOnboarding
 
     var body: some Scene {
         MenuBarExtra("Pocket Vault", image: "StatusBarIcon") {
@@ -26,19 +27,32 @@ struct PocketVaultApp: App {
         .menuBarExtraStyle(.window)
 
         Window("Pocket Vault", id: "main") {
-            MainWindowView()
-                .modelContainer(DataManager.shared.container)
-                .environment(lockManager)
-                .environment(biometricService)
-                .environment(syncService)
-                .onAppear {
-                    appDelegate.showMainWindow()
-                }
-                .onDisappear {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        appDelegate.hideFromDock()
+            Group {
+                if hasCompletedOnboarding {
+                    MainWindowView()
+                } else {
+                    OnboardingView {
+                        hasCompletedOnboarding = true
                     }
                 }
+            }
+            .modelContainer(DataManager.shared.container)
+            .environment(lockManager)
+            .environment(biometricService)
+            .environment(syncService)
+            .onAppear {
+                if !hasCompletedOnboarding {
+                    try? KeychainService.shared.deleteAll()
+                }
+                DispatchQueue.main.async {
+                    appDelegate.showMainWindow()
+                }
+            }
+            .onDisappear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    appDelegate.hideFromDock()
+                }
+            }
         }
         .defaultSize(
             width: AppTheme.Sizing.windowDefaultWidth,

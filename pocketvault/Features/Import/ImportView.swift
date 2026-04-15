@@ -174,9 +174,10 @@ struct ImportView: View {
     private func pickFile() {
         let panel = NSOpenPanel()
         panel.title = "Choose .env File"
-        panel.allowedContentTypes = [.plainText]
+        panel.allowedContentTypes = [.plainText, .data]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
+        panel.showsHiddenFiles = true
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         loadFile(at: url)

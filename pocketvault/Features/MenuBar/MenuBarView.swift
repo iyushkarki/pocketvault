@@ -4,6 +4,7 @@ import SwiftData
 struct MenuBarView: View {
     @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
     @Environment(LockManager.self) private var lockManager
+    @AppStorage(AppConfig.UserDefaultsKey.hasCompletedOnboarding) private var hasCompletedOnboarding = AppConfig.Defaults.hasCompletedOnboarding
     @State private var selectedProject: Project?
     @State private var selectedFile: EnvFile?
     @State private var searchQuery = ""
@@ -14,7 +15,9 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if lockManager.isLocked {
+            if !hasCompletedOnboarding {
+                onboardingPendingView
+            } else if lockManager.isLocked {
                 UnlockView(compact: true) {
                     lockManager.unlock()
                     viewModel.hideAllValues()
@@ -41,6 +44,31 @@ struct MenuBarView: View {
             copyFeedback = false
             viewModel.hideAllValues()
         }
+    }
+
+    private var onboardingPendingView: some View {
+        VStack(spacing: AppTheme.Spacing.md) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(AppTheme.accent)
+
+            Text("Finish Setting Up")
+                .font(AppTheme.Fonts.title)
+                .foregroundStyle(AppTheme.textPrimary)
+
+            Text("Complete the setup in the main window\nto start using Pocket Vault.")
+                .font(AppTheme.Fonts.caption)
+                .foregroundStyle(AppTheme.textSecondary)
+                .multilineTextAlignment(.center)
+
+            Button("Open Setup") {
+                openManageWindow()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, AppTheme.Spacing.xl)
     }
 
     private var mainView: some View {
