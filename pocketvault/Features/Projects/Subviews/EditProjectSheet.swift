@@ -5,6 +5,7 @@ struct EditProjectSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(LockManager.self) private var lockManager
+    @Query(sort: \Project.name) private var projects: [Project]
     @Bindable var project: Project
 
     @State private var name: String
@@ -87,20 +88,18 @@ struct EditProjectSheet: View {
     }
 
     private func validateName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
+        if NameValidator.normalize(name).isEmpty {
             nameError = nil
             return
         }
-        if trimmed.count > 100 {
-            nameError = "Name must be 100 characters or less."
-            return
-        }
-        nameError = nil
+        nameError = NameValidator.validateProjectName(name, existingProjects: projects, excluding: project.id)
     }
 
     private func saveProject() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        validateName()
+        guard nameError == nil else { return }
+
+        let trimmed = NameValidator.normalize(name)
         let desc = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let originalName = project.name
         let originalDescription = project.projectDescription
@@ -110,11 +109,13 @@ struct EditProjectSheet: View {
         project.updatedAt = .now
         do {
             try modelContext.save()
+            try VaultRepository.shared.captureFromSwiftData(context: modelContext)
             dismiss()
         } catch {
             project.name = originalName
             project.projectDescription = originalDescription
             project.updatedAt = originalUpdatedAt
+            modelContext.rollback()
             saveError = "Failed to save project: \(error.localizedDescription)"
             showSaveError = true
         }

@@ -16,8 +16,6 @@ struct CreateFileSheet: View {
 
     private enum Field: Hashable { case name }
 
-    private static let fileNameRegex = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$|^\.[a-zA-Z0-9][a-zA-Z0-9._-]*$/
-
     private var isValid: Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty && nameError == nil
@@ -70,37 +68,32 @@ struct CreateFileSheet: View {
     }
 
     private func validateName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
+        if NameValidator.normalize(name).isEmpty {
             nameError = nil
             return
         }
-        if trimmed.wholeMatch(of: Self.fileNameRegex) == nil {
-            nameError = "Invalid file name format."
-            return
-        }
-        if (project.files ?? []).contains(where: { $0.name == trimmed }) {
-            nameError = "A file with this name already exists."
-            return
-        }
-        nameError = nil
+        nameError = NameValidator.validateFileName(name, existingFiles: project.files ?? [])
     }
 
     private func createFile() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        validateName()
+        guard nameError == nil else { return }
+
+        let trimmed = NameValidator.normalize(name)
+        let originalProjectUpdatedAt = project.updatedAt
         let file = EnvFile(name: trimmed)
         file.project = project
         modelContext.insert(file)
         project.updatedAt = .now
         do {
             try modelContext.save()
+            try VaultRepository.shared.captureFromSwiftData(context: modelContext)
             let createdFile = file
             dismiss()
             onFileCreated?(createdFile)
         } catch {
-            project.updatedAt = .now
+            project.updatedAt = originalProjectUpdatedAt
             modelContext.rollback()
-            modelContext.delete(file)
             saveError = "Failed to save file: \(error.localizedDescription)"
             showSaveError = true
         }

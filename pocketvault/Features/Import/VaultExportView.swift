@@ -5,13 +5,13 @@ import os
 
 struct VaultExportView: View {
     @Environment(\.dismiss) private var dismiss
-    @Query(sort: \Project.name) private var projects: [Project]
 
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var errorMessage: String?
     @State private var isProcessing = false
-    @State private var exportComplete = false
+
+    private let snapshot: VaultSnapshot = VaultRepository.shared.snapshot
 
     private let logger = Logger(
         subsystem: AppConfig.bundleIdentifier,
@@ -21,7 +21,7 @@ struct VaultExportView: View {
     private var canExport: Bool {
         password.count >= 8
             && password == confirmPassword
-            && !projects.isEmpty
+            && snapshot.hasData
             && !isProcessing
     }
 
@@ -44,11 +44,11 @@ struct VaultExportView: View {
                 .font(.system(size: 36))
                 .foregroundStyle(AppTheme.accent)
 
-            Text("Export Encrypted Vault")
+            Text("Export Encrypted Backup")
                 .font(.title3.bold())
                 .foregroundStyle(AppTheme.textPrimary)
 
-            Text("All \(projects.count) project\(projects.count == 1 ? "" : "s") will be encrypted\nwith the password you provide.")
+            Text("All \(snapshot.projectCount) project\(snapshot.projectCount == 1 ? "" : "s") will be encrypted\nwith the password you provide.")
                 .font(.body)
                 .foregroundStyle(AppTheme.textSecondary)
                 .multilineTextAlignment(.center)
@@ -122,15 +122,14 @@ struct VaultExportView: View {
         isProcessing = true
 
         do {
-            let vaultData = try VaultService.exportAll(projects: Array(projects))
-            let json = try VaultService.serialize(vaultData)
-            let encrypted = try CryptoService.encryptVault(json, password: password)
+            let plaintext = try BackupService.makeBackup(from: snapshot)
+            let encrypted = try CryptoService.encryptVault(plaintext, password: password)
 
             clearSecrets()
 
             let panel = NSSavePanel()
-            panel.title = "Save Encrypted Vault"
-            panel.nameFieldStringValue = "pocketvault-backup.envvault"
+            panel.title = "Save Pocket Vault Backup"
+            panel.nameFieldStringValue = "pocketvault-backup.pocketvault"
             panel.allowedContentTypes = [.data]
 
             guard panel.runModal() == .OK, let url = panel.url else {
@@ -140,7 +139,7 @@ struct VaultExportView: View {
 
             try encrypted.write(to: url)
             UserDefaults.standard.set(Date(), forKey: AppConfig.UserDefaultsKey.lastVaultExportDate)
-            logger.info("Vault exported successfully (\(self.projects.count) projects)")
+            logger.info("Vault exported successfully (\(self.snapshot.projectCount) projects)")
             dismiss()
         } catch {
             errorMessage = error.localizedDescription

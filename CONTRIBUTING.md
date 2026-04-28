@@ -36,7 +36,7 @@ open pocketvault.xcodeproj
 
 Set the scheme to `pocketvault` and destination to `My Mac`, then run.
 
-**Note:** Unsigned debug builds use an unscoped Keychain namespace. Any secrets you create in a dev build will not carry over to a signed production build — this is expected.
+**Note:** Unsigned debug builds use an unscoped iCloud Keychain namespace for the master key. The master key created in a dev build will not be readable by a signed production build — this is expected. Vault contents themselves live in an encrypted blob on disk (and in CloudKit when sync is on), not in the Keychain.
 
 ---
 
@@ -70,22 +70,24 @@ For feature requests, describe the problem you are trying to solve rather than j
 4. Test your change manually on a debug build before submitting
 5. Open the PR against `main` with a clear description of what changed and why
 
-PRs that touch Keychain reads/writes, SwiftData context saves, or the `CryptoService` vault format should include a brief note on how you tested the change.
+PRs that touch `VaultRepository`, `SyncCoordinator`, `CloudVaultStore`, the encrypted vault blob format in `CryptoService`, or the `BackupService` snapshot format should include a brief note on how you tested the change (e.g. fresh install, sync toggle on/off, conflict resolution flow, two-device merge).
 
 ---
 
 ## Code Style
 
-- Swift 6, `@MainActor` isolation by default across the module
+- Swift 5, `@MainActor` isolation by default across the module
 - No third-party dependencies — keep it that way
 - No force unwraps or `try!` outside of `fatalError`-equivalent situations
 - Prefer throwing functions over returning optionals when failure has a reason worth surfacing
 - Match the existing file/type structure described in ARCHITECTURE.md
+- After any mutation to SwiftData entities (`Project`, `EnvFile`, `EnvEntry`), call `VaultRepository.shared.captureFromSwiftData(context:)` so the encrypted blob and sync engine stay in lockstep. SwiftData is purely an in-memory projection — the encrypted snapshot on disk is the source of truth.
 
 ---
 
 ## What Not to Send
 
-- Changes to the vault binary format in `CryptoService` without a documented migration path
+- Changes to the encrypted vault blob format in `CryptoService` or the `VaultSnapshot` schema without a documented migration path
+- Reintroducing per-secret Keychain storage — only the master key belongs in iCloud Keychain
 - New third-party Swift packages
 - UI changes without a clear rationale — the current design is intentional

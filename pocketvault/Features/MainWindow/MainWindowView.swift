@@ -4,8 +4,11 @@ import UniformTypeIdentifiers
 
 struct MainWindowView: View {
     @Environment(LockManager.self) private var lockManager
-    @Query private var projects: [Project]
+    @Environment(SyncCoordinator.self) private var syncCoordinator
+    @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
+    @AppStorage(AppConfig.UserDefaultsKey.lastSelectedFileID) private var lastSelectedFileID = ""
     @State private var selectedFile: EnvFile?
+    @State private var expandedProjectIDs: Set<UUID> = []
     @State private var viewModel = EnvEditorViewModel()
     @State private var searchText = ""
     @State private var showImportSheet = false
@@ -28,6 +31,36 @@ struct MainWindowView: View {
         }
         UserDefaults.standard.set(Date(), forKey: AppConfig.UserDefaultsKey.lastVaultExportDate)
         return false
+    }
+
+    private var fileIDsByRecency: [UUID] {
+        allFilesByRecency.map(\.id)
+    }
+
+    private var allFilesByRecency: [EnvFile] {
+        projects
+            .flatMap { $0.files ?? [] }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private var conflictBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if case .conflict = syncCoordinator.state { return true }
+                return false
+            },
+            set: { _ in }
+        )
+    }
+
+    private var remoteDeletedBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if case .remoteDeleted = syncCoordinator.state { return true }
+                return false
+            },
+            set: { _ in }
+        )
     }
 
     var body: some View {
@@ -55,6 +88,7 @@ struct MainWindowView: View {
             NavigationSplitView {
             SidebarView(
                 selectedFile: $selectedFile,
+                expandedProjectIDs: $expandedProjectIDs,
                 viewModel: viewModel
             )
             .navigationSplitViewColumnWidth(
@@ -77,7 +111,7 @@ struct MainWindowView: View {
 
                     Divider()
 
-                    Button("Import Encrypted Vault...") {
+                    Button("Import Encrypted Backup...") {
                         showVaultImport = true
                     }
                 } label: {
@@ -87,17 +121,17 @@ struct MainWindowView: View {
 
                 Menu {
                     if let file = selectedFile {
-                        Button("Export \"\(file.name)\"...") {
+                        Button("Export File...") {
                             exportFile(file)
                         }
                         .keyboardShortcut("e", modifiers: .command)
                         if let project = file.project {
-                            Button("Export All Files in \"\(project.name)\"...") {
+                            Button("Export Project Files...") {
                                 exportProject(project)
                             }
                         }
                         Divider()
-                        Button(copyFeedback ? "Copied!" : "Copy All as KEY=VALUE") {
+                        Button(copyFeedback ? "Copied!" : "Copy File as KEY=VALUE") {
                             copyAll(file)
                         }
                         .disabled(copyFeedback)
@@ -107,7 +141,7 @@ struct MainWindowView: View {
 
                     Divider()
 
-                    Button("Export Encrypted Vault...") {
+                    Button("Export Encrypted Backup...") {
                         showVaultExport = true
                     }
                 } label: {
@@ -143,9 +177,16 @@ struct MainWindowView: View {
         }
         .onChange(of: selectedFile) { _, _ in
             lockManager.recordActivity()
+            syncSelectionState()
         }
         .onChange(of: searchText) { _, _ in
             lockManager.recordActivity()
+        }
+        .onChange(of: lastSelectedFileID) { _, _ in
+            restoreSelectionIfNeeded(preferStoredSelection: true)
+        }
+        .onChange(of: fileIDsByRecency) { _, _ in
+            restoreSelectionIfNeeded()
         }
         .sheet(isPresented: $showImportSheet) {
             ImportView(fileURL: droppedFileURL)
@@ -162,11 +203,30 @@ struct MainWindowView: View {
                 selectedFile = file
             }
         }
+        .sheet(isPresented: conflictBinding) {
+            if case .conflict(let local, let remote) = syncCoordinator.state {
+                ConflictResolutionSheet(local: local, remote: remote) { useLocal in
+                    await syncCoordinator.resolveConflict(useLocal: useLocal)
+                }
+            }
+        }
+        .sheet(isPresented: remoteDeletedBinding) {
+            if case .remoteDeleted(let updatedAt, let deviceName) = syncCoordinator.state {
+                RemoteDeletedSheet(
+                    remoteUpdatedAt: updatedAt,
+                    remoteUpdatedByDeviceName: deviceName,
+                    localProjectCount: projects.count
+                ) { keepLocal in
+                    await syncCoordinator.resolveRemoteDeleted(keepLocal: keepLocal)
+                }
+            }
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
         .onAppear {
             viewModel.lockManager = lockManager
+            restoreSelectionIfNeeded()
         }
         }
     }
@@ -233,13 +293,13 @@ struct MainWindowView: View {
 
     private func exportFile(_ file: EnvFile) {
         lockManager.recordActivity()
+        let content = ExportService.exportFile(file)
+        let panel = NSSavePanel()
+        panel.title = "Export \(file.name)"
+        panel.nameFieldStringValue = file.name
+        panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let content = try ExportService.exportFile(file)
-            let panel = NSSavePanel()
-            panel.title = "Export \(file.name)"
-            panel.nameFieldStringValue = file.name
-            panel.allowedContentTypes = [.plainText]
-            guard panel.runModal() == .OK, let url = panel.url else { return }
             try content.write(to: url, atomically: true, encoding: .utf8)
         } catch {
             exportError = "Failed to export: \(error.localizedDescription)"
@@ -252,14 +312,18 @@ struct MainWindowView: View {
         do {
             let files = try ExportService.exportProject(project)
             let panel = NSOpenPanel()
-            panel.title = "Export \(project.name)"
+            panel.title = "Choose Export Location"
             panel.canChooseDirectories = true
             panel.canChooseFiles = false
             panel.canCreateDirectories = true
-            panel.prompt = "Export Here"
-            guard panel.runModal() == .OK, let directory = panel.url else { return }
+            panel.prompt = "Choose Folder"
+            guard panel.runModal() == .OK, let parentDirectory = panel.url else { return }
+
+            let exportDirectory = makeUniqueExportDirectory(for: project.name, in: parentDirectory)
+            try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: false)
+
             for file in files {
-                let fileURL = directory.appendingPathComponent(file.fileName)
+                let fileURL = exportDirectory.appendingPathComponent(file.fileName)
                 try file.content.write(to: fileURL, atomically: true, encoding: .utf8)
             }
         } catch {
@@ -268,19 +332,37 @@ struct MainWindowView: View {
         }
     }
 
+    private func makeUniqueExportDirectory(for projectName: String, in parentDirectory: URL) -> URL {
+        let baseName = sanitizedExportDirectoryName(projectName)
+        var candidate = parentDirectory.appendingPathComponent(baseName, isDirectory: true)
+        var suffix = 2
+
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = parentDirectory.appendingPathComponent("\(baseName) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
+
+        return candidate
+    }
+
+    private func sanitizedExportDirectoryName(_ name: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/:")
+        let cleanedName = name
+            .components(separatedBy: invalidCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return cleanedName.isEmpty ? "Pocket Vault Export" : cleanedName
+    }
+
     private func copyAll(_ file: EnvFile) {
         lockManager.recordActivity()
-        do {
-            let content = try ExportService.copyAllEntries(file)
-            ClipboardManager.shared.copyToClipboard(content)
-            copyFeedback = true
-            Task {
-                try? await Task.sleep(for: .seconds(2))
-                copyFeedback = false
-            }
-        } catch {
-            exportError = "Failed to copy: \(error.localizedDescription)"
-            showExportErrorAlert = true
+        let content = ExportService.copyAllEntries(file)
+        ClipboardManager.shared.copyToClipboard(content)
+        copyFeedback = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copyFeedback = false
         }
     }
 
@@ -295,6 +377,57 @@ struct MainWindowView: View {
             }
         }
         return true
+    }
+
+    private func syncSelectionState() {
+        guard let selectedFile else {
+            lastSelectedFileID = ""
+            return
+        }
+
+        lastSelectedFileID = selectedFile.id.uuidString
+        if let projectID = selectedFile.project?.id {
+            expandedProjectIDs.insert(projectID)
+        }
+    }
+
+    private func restoreSelectionIfNeeded(preferStoredSelection: Bool = false) {
+        guard !allFilesByRecency.isEmpty else {
+            selectedFile = nil
+            expandedProjectIDs.removeAll()
+            lastSelectedFileID = ""
+            return
+        }
+
+        if preferStoredSelection,
+           let restoredFile = allFilesByRecency.first(where: { $0.id.uuidString == lastSelectedFileID }) {
+            selectedFile = restoredFile
+            if let projectID = restoredFile.project?.id {
+                expandedProjectIDs.insert(projectID)
+            }
+            return
+        }
+
+        if let selectedFile,
+           allFilesByRecency.contains(where: { $0.id == selectedFile.id }) {
+            if let projectID = selectedFile.project?.id {
+                expandedProjectIDs.insert(projectID)
+            }
+            return
+        }
+
+        if let restoredFile = allFilesByRecency.first(where: { $0.id.uuidString == lastSelectedFileID }) {
+            selectedFile = restoredFile
+            if let projectID = restoredFile.project?.id {
+                expandedProjectIDs.insert(projectID)
+            }
+            return
+        }
+
+        selectedFile = allFilesByRecency.first
+        if let projectID = selectedFile?.project?.id {
+            expandedProjectIDs.insert(projectID)
+        }
     }
 }
 

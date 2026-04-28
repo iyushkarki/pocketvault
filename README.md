@@ -2,9 +2,9 @@
 
 > **Beta:** This is a pre-release build. Expect rough edges. Please [report issues](https://github.com/anomalyco/pocketvault/issues).
 
-A native macOS menu bar app for securely managing `.env` environment variables.
+A native macOS app with a menu bar companion for securely managing `.env` environment variables.
 
-Secrets are stored in the macOS Keychain (hardware-backed AES-256 encryption on Apple Silicon). Metadata syncs across devices via iCloud. Zero third-party dependencies.
+The vault is a single encrypted blob (AES-256-GCM) stored locally and, optionally, mirrored to your private CloudKit database. The encryption key lives in iCloud Keychain so it travels with your Apple ID and never touches a server in the clear. SwiftData is used purely as an in-memory view of the vault — the vault file is the single source of truth. Zero third-party dependencies.
 
 ---
 
@@ -15,8 +15,8 @@ Secrets are stored in the macOS Keychain (hardware-backed AES-256 encryption on 
 Requires macOS 15.6 or later. Notarized by Apple.
 
 1. Open the `.dmg` and drag Pocket Vault to Applications.
-2. Launch from Applications or Spotlight — the app lives in your menu bar.
-3. On first launch, complete the short onboarding to set up your vault.
+2. Launch from Applications or Spotlight — Pocket Vault opens as a normal macOS app and also adds a menu bar companion.
+3. On first launch, complete the onboarding in the main window to set up your vault.
 
 ---
 
@@ -25,9 +25,9 @@ Requires macOS 15.6 or later. Notarized by Apple.
 - **Menu bar quick access** -- browse projects, reveal and copy values in one click
 - **Full editor window** -- create projects, manage files, add/edit/delete entries
 - **Touch ID / device authentication** -- app starts locked, unlock with biometrics
-- **iCloud sync** -- projects and secrets sync across your Macs (opt-in)
+- **iCloud sync** -- optional, gated on iCloud Keychain availability; conflicts and remote deletions always surface to you
 - **Import/export .env files** -- standard KEY=VALUE format with conflict resolution
-- **Encrypted backups** -- portable `.envvault` format (PBKDF2 + AES-256-GCM)
+- **Encrypted backups** -- portable `.pocketvault` snapshot format (PBKDF2 + AES-256-GCM)
 - **Auto-lock** -- configurable timeout, locks on sleep/screen lock
 - **Auto-clear clipboard** -- configurable timeout after copying a secret
 - **Table and Raw view** -- toggle between structured editor and raw `.env` text
@@ -57,27 +57,36 @@ open pocketvault.xcodeproj
 ```
 pocketvault/
 ├── App/
-│   ├── PocketVaultApp.swift           # @main -- MenuBarExtra + Window + Settings scenes
-│   └── AppDelegate.swift              # Dock visibility toggling
+│   └── PocketVaultApp.swift           # @main -- bootstrap, scenes, onboarding flow
 │
 ├── Core/
 │   ├── Config/AppConfig.swift         # Bundle ID, Keychain service name, UserDefaults keys
-│   ├── Data/DataManager.swift         # SwiftData ModelContainer (CloudKit-capable)
+│   ├── Data/
+│   │   ├── DataManager.swift          # In-memory SwiftData ModelContainer (rebuilt from snapshot)
+│   │   └── VaultRepository.swift      # @MainActor source of truth: snapshot ↔ SwiftData ↔ disk
 │   ├── Models/
-│   │   ├── Project.swift              # Project model (name, description, files)
-│   │   ├── EnvFile.swift              # File model (name, project, entries)
-│   │   └── EnvEntry.swift             # Entry model (key, keychainIdentifier, sortOrder)
+│   │   ├── Project.swift              # SwiftData Project (transient view model)
+│   │   ├── EnvFile.swift              # SwiftData EnvFile (transient view model)
+│   │   ├── EnvEntry.swift             # SwiftData EnvEntry (key, value, sortOrder, comment)
+│   │   ├── VaultSnapshot.swift        # The persisted vault (Codable)
+│   │   └── CloudVaultManifest.swift   # CloudKit metadata (revision, deletion tombstone)
 │   └── Services/
-│       ├── KeychainService.swift      # Keychain CRUD (Security framework)
+│       ├── AppRelauncher.swift        # Safe in-place app restart helper
 │       ├── BiometricService.swift     # Touch ID / device auth (LAContext)
-│       ├── CryptoService.swift        # PBKDF2 + AES-256-GCM for .envvault
-│       ├── VaultService.swift         # Serialize/deserialize vault data
-│       ├── SyncService.swift          # iCloud sync orchestration
+│       ├── CryptoService.swift        # PBKDF2 + AES-256-GCM for .pocketvault backups
+│       ├── EncryptedVaultStore.swift  # On-disk vault file (AES-256-GCM via VaultKeyService)
+│       ├── VaultKeyService.swift      # Master key in iCloud Keychain (synchronizable)
+│       ├── BackupService.swift        # Snapshot ↔ encrypted .pocketvault file
+│       ├── ICloudKeychainAvailability.swift  # Probe + System Settings deep-link
+│       ├── CloudVaultStore.swift      # CloudKit record I/O for the vault blob + manifest
+│       ├── CloudVaultSubscription.swift  # CKQuerySubscription + 60s scheduler fallback
+│       ├── SyncCoordinator.swift      # State machine: off / ready / syncing / conflict / remoteDeleted
 │       ├── SearchService.swift        # Cross-project search
-│       ├── ImportService.swift        # .env import with conflict resolution
+│       ├── ImportService.swift        # .env import → SwiftData → captureFromSwiftData
 │       ├── ExportService.swift        # .env export via NSSavePanel
 │       ├── EnvParser.swift            # .env file parser and formatter
 │       ├── LockManager.swift          # Auto-lock, sleep lock, activity tracking
+│       ├── NameValidator.swift        # Shared project/file naming rules
 │       └── ClipboardManager.swift     # Auto-clear clipboard after timeout
 │
 ├── Design/
@@ -90,23 +99,28 @@ pocketvault/
 ├── Features/
 │   ├── Import/
 │   │   ├── ImportView.swift           # .env import sheet
-│   │   ├── VaultExportView.swift      # Encrypted .envvault export
-│   │   └── VaultImportView.swift      # Encrypted .envvault import
+│   │   ├── VaultExportView.swift      # Encrypted .pocketvault export (BackupService)
+│   │   └── VaultImportView.swift      # Encrypted .pocketvault import (BackupService.merge)
 │   ├── Lock/
-│   │   └── MasterPasswordUnlockView.swift  # Device auth unlock screen
+│   │   └── MasterPasswordUnlockView.swift  # UnlockView device auth screen
 │   ├── MainWindow/
-│   │   ├── MainWindowView.swift       # NavigationSplitView root
+│   │   ├── MainWindowView.swift       # NavigationSplitView root + conflict/remote-deleted sheets
 │   │   └── SidebarView.swift          # Project/file tree
 │   ├── MenuBar/
 │   │   ├── MenuBarView.swift          # Quick-access popover
-│   │   ├── SettingsView.swift         # Settings tabs
-│   │   └── Subviews/QuickSearchView.swift
+│   │   ├── SettingsView.swift         # Settings tabs (sync gated on iCloud Keychain)
+│   │   └── Subviews/
+│   │       ├── QuickSearchView.swift
+│   │       ├── ConflictResolutionSheet.swift
+│   │       └── RemoteDeletedSheet.swift
+│   ├── Onboarding/
+│   │   └── OnboardingView.swift       # First-run flow with iCloud Keychain check
 │   ├── Projects/Subviews/
 │   │   ├── CreateProjectSheet.swift
 │   │   └── EditProjectSheet.swift
 │   └── EnvEditor/
 │       ├── EnvEditorView.swift        # Entry list with Table/Raw toggle
-│       ├── EnvEditorViewModel.swift   # Keychain ops, CRUD, copy
+│       ├── EnvEditorViewModel.swift   # CRUD + captureFromSwiftData on every save
 │       └── Subviews/
 │           ├── AddEntrySheet.swift
 │           ├── EditEntrySheet.swift
@@ -118,11 +132,44 @@ pocketvault/
     └── StatusBarIcon.imageset/        # Menu bar icon (template)
 ```
 
+## Architecture
+
+```
+                   ┌─────────────────────────┐
+                   │  iCloud Keychain        │  ← master key only
+                   │  (synchronizable)       │
+                   └──────────┬──────────────┘
+                              │ unwraps
+                              ▼
+   SwiftUI views ──► SwiftData (in-memory)
+        │                     │
+        │ captureFromSwiftData│
+        ▼                     ▼
+   VaultRepository ──► VaultSnapshot ──► EncryptedVaultStore (AES-256-GCM blob on disk)
+                                    │
+                                    │ scheduleUpload (1.5s debounce)
+                                    ▼
+                              SyncCoordinator
+                                    │
+                              ┌─────┴─────┐
+                              ▼           ▼
+                       CloudVaultStore  CloudVaultSubscription
+                       (CKRecord I/O)   (CKQuerySubscription + 60s scheduler)
+                              │
+                              ▼
+                       CloudKit private DB
+```
+
+- **Single source of truth** is the encrypted vault blob on disk. SwiftData is rebuilt from `VaultSnapshot` at launch and after every cloud pull.
+- **Writes flow** view → SwiftData → `VaultRepository.captureFromSwiftData(context:)` → save to disk → `SyncCoordinator` schedules an upload.
+- **iCloud sync is hard-gated** on iCloud Keychain. If unavailable, the toggle in Settings/Onboarding is disabled and a deep-link to System Settings is shown.
+- **Conflicts always ask the user** (never auto-merge). Remote deletions show a "Keep local / Wipe local" sheet on every other Mac.
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Swift 6 |
+| Language | Swift 5 |
 | UI | SwiftUI |
 | State | `@Observable` (Observation framework) |
 | Data | SwiftData + CloudKit |

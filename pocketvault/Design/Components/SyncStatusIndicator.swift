@@ -1,52 +1,55 @@
 import SwiftUI
 
 struct SyncStatusIndicator: View {
-    @Environment(SyncService.self) private var syncService
+    @Environment(SyncCoordinator.self) private var coordinator
 
     private var icon: String {
-        switch syncService.status {
-        case .disabled:
-            return "internaldrive.fill"
-        case .synced:
-            return "checkmark.icloud.fill"
-        case .unavailable:
-            return "exclamationmark.icloud.fill"
-        case .migrating:
-            return "arrow.triangle.2.circlepath.icloud.fill"
-        case .error:
-            return "xmark.icloud.fill"
+        switch coordinator.state {
+        case .off: return "internaldrive.fill"
+        case .ready: return "checkmark.icloud.fill"
+        case .syncing: return "arrow.triangle.2.circlepath.icloud.fill"
+        case .conflict: return "exclamationmark.icloud.fill"
+        case .remoteDeleted: return "trash.slash.circle.fill"
+        case .needsAttention: return "xmark.icloud.fill"
         }
     }
 
     private var color: Color {
-        switch syncService.status {
-        case .disabled:
-            return AppTheme.textTertiary
-        case .synced:
-            return AppTheme.success
-        case .unavailable:
-            return AppTheme.warning
-        case .migrating:
-            return AppTheme.textSecondary
-        case .error:
-            return AppTheme.error
+        switch coordinator.state {
+        case .off: return AppTheme.textTertiary
+        case .ready: return AppTheme.success
+        case .syncing: return AppTheme.textSecondary
+        case .conflict, .remoteDeleted: return AppTheme.warning
+        case .needsAttention: return AppTheme.error
         }
     }
 
     private var tooltip: String {
-        switch syncService.status {
-        case .disabled:
-            return "Local only"
-        case .synced:
+        switch coordinator.state {
+        case .off: return "Local only"
+        case .ready:
+            if let last = coordinator.lastSyncedAt {
+                return "Synced \(Self.relativeFormatter.localizedString(for: last, relativeTo: .now))"
+            }
             return "Synced via iCloud"
-        case .unavailable(let reason):
-            return reason
-        case .migrating:
-            return "Syncing..."
-        case .error(let message):
-            return message
+        case .syncing: return "Syncing..."
+        case .conflict: return "Conflict needs resolution"
+        case .remoteDeleted: return "iCloud vault was deleted"
+        case .needsAttention(let kind):
+            switch kind {
+            case .iCloudKeychainUnavailable(let reason): return reason
+            case .cloudKitAccountUnavailable(let message): return message
+            case .remoteUnreadable: return "iCloud copy can't be read on this Mac"
+            case .syncError(let message): return message
+            }
         }
     }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
 
     var body: some View {
         Image(systemName: icon)

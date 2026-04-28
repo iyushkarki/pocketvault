@@ -17,8 +17,6 @@ struct EditEntrySheet: View {
 
     private enum Field: Hashable { case key, value }
 
-    private static let keyRegex = /^[A-Za-z_][A-Za-z0-9_]*$/
-
     private let originalKey: String
     private let originalValue: String
 
@@ -115,8 +113,8 @@ struct EditEntrySheet: View {
             keyError = nil
             return
         }
-        if trimmed.wholeMatch(of: Self.keyRegex) == nil {
-            keyError = "Must start with a letter or underscore, containing only letters, numbers, and underscores."
+        if let error = EnvKeyValidator.validate(trimmed) {
+            keyError = error
             return
         }
         let siblings = entry.file?.entries ?? []

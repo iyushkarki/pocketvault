@@ -147,16 +147,12 @@ private struct KeyCopyButton: View {
     var body: some View {
         Button {
             lockManager.recordActivity()
-            do {
-                if let value = try KeychainService.shared.getValue(for: entry.keychainIdentifier) {
-                    ClipboardManager.shared.copyToClipboard(value)
-                    copied = true
-                    Task {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        copied = false
-                    }
-                }
-            } catch {}
+            ClipboardManager.shared.copyToClipboard(entry.value)
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                copied = false
+            }
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(.system(size: 11))

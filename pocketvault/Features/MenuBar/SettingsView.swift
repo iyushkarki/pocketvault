@@ -21,19 +21,36 @@ struct SettingsView: View {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 450, height: 350)
+        .frame(width: 460, height: 360)
     }
 }
 
 private struct GeneralSettingsView: View {
-    @Environment(SyncService.self) private var syncService
+    @Environment(LockManager.self) private var lockManager
+    @Environment(SyncCoordinator.self) private var syncCoordinator
     @AppStorage(AppConfig.UserDefaultsKey.launchAtLogin) private var launchAtLogin = AppConfig.Defaults.launchAtLogin
 
-    @State private var syncToggleValue = UserDefaults.standard.bool(forKey: AppConfig.UserDefaultsKey.cloudKitSyncEnabled)
-    @State private var isMigrating = false
-    @State private var showRestartAlert = false
-    @State private var showErrorAlert = false
-    @State private var errorMessage = ""
+    @State private var keychainAvailability: ICloudKeychainStatus = .unknown
+    @State private var errorMessage: String?
+    @State private var showError = false
+
+    private var iCloudKeychainOK: Bool {
+        if case .available = keychainAvailability { return true }
+        return false
+    }
+
+    private var syncEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { syncCoordinator.isEnabled },
+            set: { newValue in
+                if newValue {
+                    Task { await enableSync() }
+                } else {
+                    disableSync()
+                }
+            }
+        )
+    }
 
     var body: some View {
         Form {
@@ -53,113 +70,129 @@ private struct GeneralSettingsView: View {
             }
 
             Section("iCloud Sync") {
-                Toggle("Sync with iCloud", isOn: $syncToggleValue)
-                    .disabled(isMigrating || (!syncService.iCloudAvailable && !syncToggleValue))
-                    .onChange(of: syncToggleValue) { _, newValue in
-                        Task { await toggleSync(newValue) }
-                    }
+                Toggle("Sync with iCloud", isOn: syncEnabledBinding)
+                    .disabled(lockManager.isLocked || (!iCloudKeychainOK && !syncCoordinator.isEnabled))
 
                 syncStatusRow
+
+                if case .needsAttention(.remoteUnreadable) = syncCoordinator.state {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("The vault stored in iCloud was encrypted with a key this Mac doesn't have. This usually happens after the app was reinstalled or vault data was wiped.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Button("Overwrite iCloud with This Mac") {
+                                Task { await syncCoordinator.overwriteRemoteWithLocal() }
+                            }
+                            Button("Turn Off Sync") {
+                                disableSync()
+                            }
+                        }
+                    }
+                }
+
+                if !iCloudKeychainOK {
+                    HStack(spacing: 6) {
+                        Label("iCloud Keychain is required.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("Open System Settings") {
+                            ICloudKeychainAvailability.openSystemSettings()
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                } else if syncCoordinator.isEnabled {
+                    Text("Your vault is available across your Macs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Your vault stays only on this Mac until you turn on iCloud Sync.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
-        .alert("Restart Required", isPresented: $showRestartAlert) {
-            Button("Restart Now") {
-                restartApp()
-            }
-        } message: {
-            Text("Pocket Vault needs to restart to apply sync changes.")
-        }
-        .alert("Sync Error", isPresented: $showErrorAlert) {
+        .alert("Sync Error", isPresented: $showError) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(errorMessage)
+            Text(errorMessage ?? "")
         }
-        .onAppear {
-            syncService.checkStatus()
+        .task {
+            let status = await Task.detached { ICloudKeychainAvailability.check() }.value
+            keychainAvailability = status
         }
     }
 
     @ViewBuilder
     private var syncStatusRow: some View {
-        switch syncService.status {
-        case .disabled:
+        switch syncCoordinator.state {
+        case .off:
+            statusLine(text: "Only on This Mac", color: .secondary)
+        case .ready:
+            statusLine(label: Label("Available on Your Macs", systemImage: "checkmark.icloud.fill"), color: .green)
+        case .syncing:
             HStack {
                 Text("Status")
                 Spacer()
-                Text("Off")
-                    .foregroundStyle(.secondary)
+                ProgressView().controlSize(.small)
+                Text("Syncing").foregroundStyle(.secondary)
             }
-        case .unavailable(let reason):
-            HStack {
-                Text("Status")
-                Spacer()
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                    .font(.callout)
-            }
-        case .migrating:
-            HStack {
-                Text("Status")
-                Spacer()
-                ProgressView()
-                    .controlSize(.small)
-                Text("Migrating...")
-                    .foregroundStyle(.secondary)
-            }
-        case .synced:
-            HStack {
-                Text("Status")
-                Spacer()
-                Label("Synced", systemImage: "checkmark.icloud.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout)
-            }
-        case .error(let message):
-            HStack {
-                Text("Status")
-                Spacer()
-                Label(message, systemImage: "exclamationmark.icloud.fill")
-                    .foregroundStyle(.red)
-                    .font(.callout)
-            }
+        case .conflict:
+            statusLine(label: Label("Conflict — open the menu bar to resolve", systemImage: "exclamationmark.triangle.fill"), color: .orange)
+        case .remoteDeleted:
+            statusLine(label: Label("Remote vault deleted — open the menu bar to resolve", systemImage: "trash.circle.fill"), color: .orange)
+        case .needsAttention(let kind):
+            statusLine(label: Label(message(for: kind), systemImage: "exclamationmark.icloud.fill"), color: .red)
         }
     }
 
-    private func toggleSync(_ enabled: Bool) async {
-        isMigrating = true
-        defer { isMigrating = false }
-
-        do {
-            if enabled {
-                try await syncService.enableSync()
-            } else {
-                try await syncService.disableSync()
-            }
-            showRestartAlert = true
-        } catch {
-            syncToggleValue = !enabled
-            errorMessage = error.localizedDescription
-            showErrorAlert = true
+    private func statusLine(text: String, color: Color) -> some View {
+        HStack {
+            Text("Status")
+            Spacer()
+            Text(text).foregroundStyle(color)
         }
     }
 
-    private func restartApp() {
-        let config = NSWorkspace.OpenConfiguration()
-        config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: Bundle.main.bundleURL,
-            configuration: config
-        ) { _, _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NSApp.terminate(nil)
-            }
+    private func statusLine(label: Label<Text, Image>, color: Color) -> some View {
+        HStack {
+            Text("Status")
+            Spacer()
+            label.foregroundStyle(color).font(.callout)
         }
+    }
+
+    private func message(for kind: SyncCoordinator.IssueKind) -> String {
+        switch kind {
+        case .iCloudKeychainUnavailable(let reason): return reason
+        case .cloudKitAccountUnavailable(let m): return m
+        case .remoteUnreadable: return "iCloud copy can't be read on this Mac."
+        case .syncError(let m): return m
+        }
+    }
+
+    private func enableSync() async {
+        let status = await Task.detached { ICloudKeychainAvailability.check() }.value
+        keychainAvailability = status
+        guard iCloudKeychainOK else {
+            errorMessage = "Sign in to iCloud and enable iCloud Keychain in System Settings."
+            showError = true
+            return
+        }
+        await syncCoordinator.startSync()
+    }
+
+    private func disableSync() {
+        syncCoordinator.stopSync()
     }
 }
 
 private struct SecuritySettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(LockManager.self) private var lockManager
+    @Environment(SyncCoordinator.self) private var syncCoordinator
     @AppStorage(AppConfig.UserDefaultsKey.autoLockTimeout) private var autoLockTimeout: TimeInterval = AppConfig.Defaults.autoLockTimeout
     @AppStorage(AppConfig.UserDefaultsKey.lockOnSleep) private var lockOnSleep: Bool = AppConfig.Defaults.lockOnSleep
     @AppStorage(AppConfig.UserDefaultsKey.clipboardClearTimeout) private var clipboardClearTimeout: TimeInterval = AppConfig.Defaults.clipboardClearTimeout
@@ -170,11 +203,9 @@ private struct SecuritySettingsView: View {
     @State private var showWipeRestartAlert = false
     @State private var wipeError: String?
     @State private var showWipeErrorAlert = false
+    @State private var selectedDeleteScope: DeleteExecutionScope = .thisMacOnly
 
-    private let logger = Logger(
-        subsystem: AppConfig.bundleIdentifier,
-        category: "Settings"
-    )
+    private let logger = Logger(subsystem: AppConfig.bundleIdentifier, category: "Settings")
 
     private let lockTimeoutOptions: [(String, TimeInterval)] = [
         ("Never", 0),
@@ -193,6 +224,26 @@ private struct SecuritySettingsView: View {
         ("5 minutes", 300),
     ]
 
+    private var dangerZoneFooterText: String {
+        if lockManager.isLocked {
+            return "Unlock Pocket Vault in the main window before deleting data."
+        }
+        return "Permanently deletes all projects, files, entries, and the encrypted vault. This cannot be undone."
+    }
+
+    private var deleteConfirmationTitle: String {
+        selectedDeleteScope == .everywhere ? "Delete Vault Everywhere?" : "Delete Data on This Mac?"
+    }
+
+    private var deleteConfirmationMessage: String {
+        switch selectedDeleteScope {
+        case .thisMacOnly:
+            return "This removes Pocket Vault data stored on this Mac. Cloud-backed data is not touched."
+        case .everywhere:
+            return "This deletes your iCloud-synced Pocket Vault data and removes it from this Mac. Other Macs will see a prompt to keep their local copy or wipe it."
+        }
+    }
+
     var body: some View {
         Form {
             Section("Auto-Lock") {
@@ -201,7 +252,6 @@ private struct SecuritySettingsView: View {
                         Text(option.0).tag(option.1)
                     }
                 }
-
                 Toggle("Lock on system sleep", isOn: $lockOnSleep)
             }
 
@@ -213,39 +263,24 @@ private struct SecuritySettingsView: View {
                 }
             }
 
-            Section {
-                Button(role: .destructive) {
-                    showDeleteConfirmation = true
-                } label: {
-                    HStack {
-                        Image(systemName: "trash.fill")
-                        Text("Delete All Data")
-                    }
-                }
-                .disabled(isDeleting)
-            } header: {
-                Text("Danger Zone")
-            } footer: {
-                Text("Permanently deletes all projects, files, entries, and Keychain secrets. This cannot be undone.")
-                    .foregroundStyle(.secondary)
-            }
+            dangerZoneSection
         }
         .formStyle(.grouped)
-        .alert("Delete All Data?", isPresented: $showDeleteConfirmation) {
+        .alert(deleteConfirmationTitle, isPresented: $showDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Continue", role: .destructive) {
                 showFinalDeleteConfirmation = true
             }
         } message: {
-            Text("This will permanently delete all projects, files, entries, and stored secrets from this device and iCloud Keychain. This cannot be undone.")
+            Text(deleteConfirmationMessage)
         }
-        .alert("Are you absolutely sure?", isPresented: $showFinalDeleteConfirmation) {
+        .alert(deleteConfirmationTitle, isPresented: $showFinalDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button("Delete Everything", role: .destructive) {
-                performSecureWipe()
+            Button(selectedDeleteScope.confirmButtonTitle, role: .destructive) {
+                Task { await performSecureWipe(scope: selectedDeleteScope) }
             }
         } message: {
-            Text("All data will be permanently erased from this device and iCloud Keychain. Export a backup first if you want to keep your data.")
+            Text("Export an encrypted backup first if you may need to restore this vault later.")
         }
         .alert("Delete Failed", isPresented: $showWipeErrorAlert, presenting: wipeError) { _ in
             Button("OK") { wipeError = nil }
@@ -253,60 +288,109 @@ private struct SecuritySettingsView: View {
             Text(message)
         }
         .alert("All Data Deleted", isPresented: $showWipeRestartAlert) {
-            Button("Restart Now") {
-                restartApp()
+            if AppRelauncher.requiresManualRestartFromDebugger {
+                Button("Quit Now") { AppRelauncher.restart() }
+                Button("Cancel", role: .cancel) {}
+            } else {
+                Button("Restart Now") { AppRelauncher.restart() }
             }
         } message: {
-            Text("All data has been erased. Pocket Vault will now restart.")
+            Text(wipeRestartHelpText)
         }
     }
 
-    private func restartApp() {
-        let config = NSWorkspace.OpenConfiguration()
-        config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: Bundle.main.bundleURL,
-            configuration: config
-        ) { _, _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NSApp.terminate(nil)
+    private var wipeRestartHelpText: String {
+        if AppRelauncher.requiresManualRestartFromDebugger {
+            return "All data has been erased. Because Pocket Vault is running from Xcode, click Quit Now, then press Run again in Xcode for a clean launch."
+        }
+        return "All data has been erased. Pocket Vault will now restart."
+    }
+
+    private var dangerZoneSection: some View {
+        Section {
+            if syncCoordinator.isEnabled {
+                Button(role: .destructive) {
+                    selectedDeleteScope = .everywhere
+                    showDeleteConfirmation = true
+                } label: {
+                    HStack {
+                        Image(systemName: "trash.fill")
+                        Text("Delete iCloud Vault Everywhere...")
+                    }
+                }
+                .disabled(isDeleting || lockManager.isLocked)
+
+                Text("Turn off iCloud Sync first if you only want to keep data on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button(role: .destructive) {
+                    selectedDeleteScope = .thisMacOnly
+                    showDeleteConfirmation = true
+                } label: {
+                    HStack {
+                        Image(systemName: "trash.fill")
+                        Text("Delete Data on This Mac...")
+                    }
+                }
+                .disabled(isDeleting || lockManager.isLocked)
+            }
+        } header: {
+            Text("Danger Zone")
+        } footer: {
+            Text(dangerZoneFooterText).foregroundStyle(.secondary)
+        }
+    }
+
+    private func performSecureWipe(scope: DeleteExecutionScope) async {
+        isDeleting = true
+        logger.warning("Secure data wipe initiated by user (scope=\(scope.rawValue, privacy: .public))")
+        lockManager.lock()
+        ClipboardManager.shared.clearImmediately()
+
+        syncCoordinator.stopSync()
+
+        if scope == .everywhere {
+            do {
+                try await syncCoordinator.deleteRemoteVault()
+            } catch {
+                wipeError = "Failed to delete iCloud vault: \(error.localizedDescription)"
+                showWipeErrorAlert = true
+                isDeleting = false
+                return
             }
         }
-    }
-
-    private func performSecureWipe() {
-        isDeleting = true
-        logger.warning("Secure data wipe initiated by user")
 
         do {
-            try KeychainService.shared.deleteAll()
-            logger.info("Keychain data deleted")
+            switch scope {
+            case .everywhere:
+                try VaultRepository.shared.wipeEverything()
+            case .thisMacOnly:
+                try VaultRepository.shared.wipeLocalDataKeepingCloudKey()
+            }
         } catch {
-            logger.error("Failed to delete Keychain data: \(error.localizedDescription)")
-            wipeError = "Failed to delete stored secrets: \(error.localizedDescription)"
-            showWipeErrorAlert = true
-            isDeleting = false
-            return
-        }
-
-        do {
-            try modelContext.delete(model: EnvEntry.self)
-            try modelContext.delete(model: EnvFile.self)
-            try modelContext.delete(model: Project.self)
-            try modelContext.save()
-            logger.info("SwiftData models deleted")
-        } catch {
-            logger.error("Failed to delete SwiftData: \(error.localizedDescription)")
-            wipeError = "Failed to delete saved metadata: \(error.localizedDescription)"
+            wipeError = "Failed to delete vault: \(error.localizedDescription)"
             showWipeErrorAlert = true
             isDeleting = false
             return
         }
 
         let domain = Bundle.main.bundleIdentifier ?? AppConfig.bundleIdentifier
-        UserDefaults.standard.removePersistentDomain(forName: domain)
+        switch scope {
+        case .everywhere:
+            UserDefaults.standard.removePersistentDomain(forName: domain)
+        case .thisMacOnly:
+            let vaultScopedKeys = [
+                AppConfig.UserDefaultsKey.cloudKitSyncEnabled,
+                AppConfig.UserDefaultsKey.lastSelectedFileID,
+                AppConfig.UserDefaultsKey.lastVaultExportDate,
+                "syncCoordinator.lastSyncedRevision",
+            ]
+            for key in vaultScopedKeys {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
         UserDefaults.standard.synchronize()
-        logger.info("UserDefaults cleared")
 
         logger.warning("Secure data wipe completed")
         isDeleting = false
@@ -314,13 +398,23 @@ private struct SecuritySettingsView: View {
     }
 }
 
+private enum DeleteExecutionScope: String, Identifiable {
+    case thisMacOnly
+    case everywhere
+
+    var id: String { rawValue }
+
+    var confirmButtonTitle: String {
+        switch self {
+        case .thisMacOnly: return "Delete This Mac Data"
+        case .everywhere: return "Delete Everywhere"
+        }
+    }
+}
+
 private struct AboutSettingsView: View {
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-    }
-
-    private var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
     }
 
     var body: some View {
@@ -332,7 +426,7 @@ private struct AboutSettingsView: View {
             Text("Pocket Vault")
                 .font(.title2.bold())
 
-            Text("Version \(appVersion) (\(buildNumber))")
+            Text("Version \(appVersion)")
                 .font(.body)
                 .foregroundStyle(.secondary)
 

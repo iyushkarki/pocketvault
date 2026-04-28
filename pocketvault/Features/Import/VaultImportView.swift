@@ -9,7 +9,7 @@ struct VaultImportView: View {
 
     @State private var fileURL: URL?
     @State private var password = ""
-    @State private var vaultData: VaultData?
+    @State private var importedSnapshot: VaultSnapshot?
     @State private var errorMessage: String?
     @State private var isProcessing = false
     @State private var importResult: (projects: Int, files: Int, entries: Int)?
@@ -34,7 +34,7 @@ struct VaultImportView: View {
 
     private var header: some View {
         HStack {
-            Text("Import Encrypted Vault")
+            Text("Import Encrypted Backup")
                 .font(.headline)
             Spacer()
             Button("Cancel") { dismiss() }
@@ -47,8 +47,8 @@ struct VaultImportView: View {
     private var content: some View {
         if let result = importResult {
             importCompleteView(result)
-        } else if let vault = vaultData {
-            vaultPreview(vault)
+        } else if let snapshot = importedSnapshot {
+            vaultPreview(snapshot)
         } else if fileURL != nil {
             passwordEntry
         } else {
@@ -61,7 +61,7 @@ struct VaultImportView: View {
             Image(systemName: "lock.doc.fill")
                 .font(.system(size: 40))
                 .foregroundStyle(AppTheme.textTertiary)
-            Text("Choose an .envvault file to import")
+            Text("Choose a .pocketvault backup to import")
                 .font(.body)
                 .foregroundStyle(AppTheme.textSecondary)
             Button("Choose File...") { pickFile() }
@@ -102,12 +102,12 @@ struct VaultImportView: View {
         .padding()
     }
 
-    private func vaultPreview(_ vault: VaultData) -> some View {
+    private func vaultPreview(_ snapshot: VaultSnapshot) -> some View {
         VStack(spacing: 0) {
             List {
-                ForEach(vault.projects, id: \.name) { project in
+                ForEach(snapshot.projects) { project in
                     DisclosureGroup {
-                        ForEach(project.files, id: \.name) { file in
+                        ForEach(project.files) { file in
                             HStack(spacing: AppTheme.Spacing.sm) {
                                 Image(systemName: "doc.text")
                                     .foregroundStyle(AppTheme.textTertiary)
@@ -139,7 +139,7 @@ struct VaultImportView: View {
             HStack {
                 Image(systemName: "info.circle")
                     .foregroundStyle(AppTheme.textTertiary)
-                Text("Importing will create new projects. Existing data is not affected.")
+                Text("Importing will merge new projects into your vault. Existing data is preserved.")
                     .font(.caption)
                     .foregroundStyle(AppTheme.textTertiary)
             }
@@ -171,7 +171,7 @@ struct VaultImportView: View {
 
     private var footer: some View {
         HStack {
-            if fileURL != nil && vaultData == nil && importResult == nil {
+            if fileURL != nil && importedSnapshot == nil && importResult == nil {
                 Button("Choose Different File...") { pickFile() }
             }
 
@@ -181,7 +181,7 @@ struct VaultImportView: View {
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-            } else if vaultData != nil {
+            } else if importedSnapshot != nil {
                 Button("Import All") { performImport() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -193,21 +193,21 @@ struct VaultImportView: View {
 
     private func pickFile() {
         let panel = NSOpenPanel()
-        panel.title = "Choose .envvault File"
+        panel.title = "Choose Pocket Vault Backup"
         panel.allowedContentTypes = [.data]
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         fileURL = url
         password = ""
-        vaultData = nil
+        importedSnapshot = nil
         errorMessage = nil
         importResult = nil
     }
 
     private func clearSecrets() {
         password = ""
-        vaultData = nil
+        importedSnapshot = nil
     }
 
     private func decrypt() {
@@ -219,12 +219,14 @@ struct VaultImportView: View {
             let encryptedData = try Data(contentsOf: url)
             let decrypted = try CryptoService.decryptVault(encryptedData, password: password)
             password = ""
-            let vault = try VaultService.deserialize(decrypted)
-            vaultData = vault
+            let snapshot = try BackupService.parseBackup(decrypted)
+            importedSnapshot = snapshot
             logger.info("Vault decrypted successfully")
         } catch {
             if error is CryptoError {
                 errorMessage = error.localizedDescription
+            } else if let backupError = error as? BackupServiceError {
+                errorMessage = backupError.localizedDescription
             } else {
                 errorMessage = "Failed to read vault file."
             }
@@ -234,14 +236,20 @@ struct VaultImportView: View {
     }
 
     private func performImport() {
-        guard let vault = vaultData else { return }
+        guard let incoming = importedSnapshot else { return }
         isProcessing = true
 
         do {
-            let result = try VaultService.importVault(vault, context: modelContext)
-            vaultData = nil
-            importResult = result
-            logger.info("Vault imported: \(result.projects) projects, \(result.files) files, \(result.entries) entries")
+            let current = VaultRepository.shared.snapshot
+            let merged = BackupService.mergeIntoCurrent(incoming, current: current)
+            try VaultRepository.shared.replaceSnapshot(merged)
+
+            let projectsAdded = incoming.projectCount
+            let filesAdded = incoming.fileCount
+            let entriesAdded = incoming.entryCount
+            importedSnapshot = nil
+            importResult = (projectsAdded, filesAdded, entriesAdded)
+            logger.info("Vault imported: \(projectsAdded) projects, \(filesAdded) files, \(entriesAdded) entries")
         } catch {
             errorMessage = error.localizedDescription
         }
