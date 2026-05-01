@@ -3,7 +3,7 @@ import Foundation
 
 @Model
 final class EnvFile {
-    var id: UUID = UUID()
+    @Attribute(.unique) var id: UUID = UUID()
     var name: String = ""
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now

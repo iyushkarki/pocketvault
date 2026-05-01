@@ -4,7 +4,6 @@ import SwiftData
 struct MenuBarView: View {
     @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
     @Environment(LockManager.self) private var lockManager
-    @AppStorage(AppConfig.UserDefaultsKey.hasCompletedOnboarding) private var hasCompletedOnboarding = AppConfig.Defaults.hasCompletedOnboarding
     @State private var selectedProject: Project?
     @State private var selectedFile: EnvFile?
     @State private var searchQuery = ""
@@ -15,9 +14,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !hasCompletedOnboarding {
-                onboardingPendingView
-            } else if lockManager.isLocked {
+            if lockManager.isLocked {
                 UnlockView(compact: true) {
                     lockManager.unlock()
                     viewModel.hideAllValues()
@@ -44,31 +41,6 @@ struct MenuBarView: View {
             copyFeedback = false
             viewModel.hideAllValues()
         }
-    }
-
-    private var onboardingPendingView: some View {
-        VStack(spacing: AppTheme.Spacing.md) {
-            Image(systemName: "lock.shield.fill")
-                .font(.system(size: 32))
-                .foregroundStyle(AppTheme.accent)
-
-            Text("Finish Setting Up")
-                .font(AppTheme.Fonts.title)
-                .foregroundStyle(AppTheme.textPrimary)
-
-            Text("Complete the setup in the main window\nto start using Pocket Vault.")
-                .font(AppTheme.Fonts.caption)
-                .foregroundStyle(AppTheme.textSecondary)
-                .multilineTextAlignment(.center)
-
-            Button("Open Setup") {
-                openManageWindow()
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, AppTheme.Spacing.xl)
     }
 
     private var mainView: some View {
@@ -134,12 +106,7 @@ struct MenuBarView: View {
                     .fill(AppTheme.surfaceElevated)
             )
 
-            SettingsLink {
-                Image(systemName: "gear")
-                    .font(.system(size: 14))
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
-            .buttonStyle(.plain)
+            optionsMenu
         }
         .padding(AppTheme.Spacing.popoverPadding)
     }
@@ -248,6 +215,8 @@ struct MenuBarView: View {
                     .lineLimit(1)
 
                 Spacer()
+
+                optionsMenu
             }
             .padding(.horizontal, AppTheme.Spacing.popoverPadding)
             .padding(.vertical, AppTheme.Spacing.sm)
@@ -357,6 +326,8 @@ struct MenuBarView: View {
                     .lineLimit(1)
 
                 Spacer()
+
+                optionsMenu
             }
             .padding(.horizontal, AppTheme.Spacing.popoverPadding)
             .padding(.vertical, AppTheme.Spacing.sm)
@@ -444,22 +415,53 @@ struct MenuBarView: View {
     }
 
     private func openManageWindow() {
+        persistMainWindowSelection()
         openWindow(id: "main")
-        (NSApp.delegate as? AppDelegate)?.showMainWindow()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private var optionsMenu: some View {
+        Menu {
+            SettingsLink {
+                Label("Settings", systemImage: "gearshape")
+            }
+
+            Divider()
+
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Label("Quit Pocket Vault", systemImage: "power")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 14))
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .help("Settings and app actions")
+    }
+
+    private func persistMainWindowSelection() {
+        if let selectedFile {
+            UserDefaults.standard.set(selectedFile.id.uuidString, forKey: AppConfig.UserDefaultsKey.lastSelectedFileID)
+            return
+        }
+
+        if let selectedProject,
+           let file = (selectedProject.files ?? []).sorted(by: { $0.updatedAt > $1.updatedAt }).first {
+            UserDefaults.standard.set(file.id.uuidString, forKey: AppConfig.UserDefaultsKey.lastSelectedFileID)
+        }
     }
 
     private func copyAllEntries(_ file: EnvFile) {
         lockManager.recordActivity()
-        do {
-            let content = try ExportService.copyAllEntries(file)
-            ClipboardManager.shared.copyToClipboard(content)
-            copyFeedback = true
-            Task {
-                try? await Task.sleep(for: .seconds(2))
-                copyFeedback = false
-            }
-        } catch {
-            viewModel.errorMessage = "Failed to copy: \(error.localizedDescription)"
+        let content = ExportService.copyAllEntries(file)
+        ClipboardManager.shared.copyToClipboard(content)
+        copyFeedback = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copyFeedback = false
         }
     }
 }

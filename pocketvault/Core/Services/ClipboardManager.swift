@@ -25,6 +25,14 @@ final class ClipboardManager {
         scheduleClear()
     }
 
+    func clearImmediately() {
+        clearTimer?.invalidate()
+        clearTimer = nil
+        NSPasteboard.general.clearContents()
+        copiedChangeCount = nil
+        hasCopiedContent = false
+    }
+
     private func scheduleClear() {
         clearTimer?.invalidate()
         guard clearTimeout > 0 else { return }

@@ -3,7 +3,7 @@ import Foundation
 
 @Model
 final class Project {
-    var id: UUID = UUID()
+    @Attribute(.unique) var id: UUID = UUID()
     var name: String = ""
     var projectDescription: String?
     var createdAt: Date = Date.now

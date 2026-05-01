@@ -1,27 +1,24 @@
 import AppKit
+import os
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {}
+    private let logger = Logger(subsystem: AppConfig.bundleIdentifier, category: "AppDelegate")
 
-    func showMainWindow() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async {
-            for window in NSApp.windows where window.title == "Pocket Vault" {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-                break
-            }
-        }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.registerForRemoteNotifications()
     }
 
-    func hideFromDock() {
-        let hasVisibleWindows = NSApp.windows.contains { window in
-            window.isVisible
-            && !window.className.contains("StatusBar")
-            && !window.className.contains("MenuBarExtra")
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        logger.info("Registered for CloudKit remote notifications")
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        logger.error("Failed to register for remote notifications: \(error.localizedDescription, privacy: .public)")
+    }
+
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        Task { @MainActor in
+            CloudVaultSubscription.shared.handleRemoteNotification(userInfo)
         }
-        guard !hasVisibleWindows else { return }
-        NSApp.setActivationPolicy(.accessory)
     }
 }

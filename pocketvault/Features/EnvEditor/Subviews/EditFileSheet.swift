@@ -15,8 +15,6 @@ struct EditFileSheet: View {
 
     private enum Field: Hashable { case name }
 
-    private static let fileNameRegex = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$|^\.[a-zA-Z0-9][a-zA-Z0-9._-]*$/
-
     private let originalName: String
 
     init(file: EnvFile) {
@@ -78,25 +76,18 @@ struct EditFileSheet: View {
     }
 
     private func validateName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
+        if NameValidator.normalize(name).isEmpty {
             nameError = nil
             return
         }
-        if trimmed.wholeMatch(of: Self.fileNameRegex) == nil {
-            nameError = "Invalid file name format."
-            return
-        }
-        let siblings = file.project?.files ?? []
-        if siblings.contains(where: { $0.id != file.id && $0.name == trimmed }) {
-            nameError = "A file with this name already exists."
-            return
-        }
-        nameError = nil
+        nameError = NameValidator.validateFileName(name, existingFiles: file.project?.files ?? [], excluding: file.id)
     }
 
     private func saveFile() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        validateName()
+        guard nameError == nil else { return }
+
+        let trimmed = NameValidator.normalize(name)
         let originalName = file.name
         let originalUpdatedAt = file.updatedAt
         let originalProjectUpdatedAt = file.project?.updatedAt
@@ -105,6 +96,7 @@ struct EditFileSheet: View {
         file.project?.updatedAt = .now
         do {
             try modelContext.save()
+            try VaultRepository.shared.captureFromSwiftData(context: modelContext)
             dismiss()
         } catch {
             file.name = originalName
@@ -112,6 +104,7 @@ struct EditFileSheet: View {
             if let originalProjectUpdatedAt {
                 file.project?.updatedAt = originalProjectUpdatedAt
             }
+            modelContext.rollback()
             saveError = "Failed to save file: \(error.localizedDescription)"
             showSaveError = true
         }

@@ -3,7 +3,8 @@ import Foundation
 enum AppConfig {
     static let bundleIdentifier = "app.pocketvault"
     static let keychainServiceName = "app.pocketvault.keychain"
-    static let keychainIdentifierPrefix = "pocketvault"
+    static let vaultKeyIdentifier = "pocketvault.master.vaultkey"
+    static let canonicalVaultFileName = "PocketVault.vault"
 
     enum Defaults {
         static let autoLockTimeout: TimeInterval = 300
@@ -15,6 +16,7 @@ enum AppConfig {
         static let globalHotkey = "cmd+shift+e"
         static let defaultExportFormat = "env"
         static let hasCompletedOnboarding = false
+        static let menuBarVisible = true
     }
 
     enum UserDefaultsKey {
@@ -27,10 +29,10 @@ enum AppConfig {
         static let globalHotkey = "globalHotkey"
         static let defaultExportFormat = "defaultExportFormat"
         static let hasCompletedOnboarding = "hasCompletedOnboarding"
-        static let lastKeychainCleanup = "lastKeychainCleanup"
-        static let keychainMigrationComplete = "keychainMigrationComplete"
-        static let keychainMigrationProgress = "keychainMigrationProgress"
         static let biometricDomainState = "biometricDomainState"
+        static let deviceIdentity = "deviceIdentity"
         static let lastVaultExportDate = "lastVaultExportDate"
+        static let lastSelectedFileID = "lastSelectedFileID"
+        static let menuBarVisible = "menuBarVisible"
     }
 }

@@ -12,10 +12,12 @@ struct ImportView: View {
     @State private var selectedFile: EnvFile?
     @State private var createNewFile = true
     @State private var newFileName = ""
+    @State private var newFileNameError: String?
     @State private var conflictResolution: ImportConflictResolution = .skip
     @State private var importResult: ImportResult?
     @State private var errorMessage: String?
     @State private var selectedEntries: Set<UUID> = []
+    @State private var showCreateProjectSheet = false
 
     let initialFileURL: URL?
 
@@ -40,6 +42,23 @@ struct ImportView: View {
             if let url = initialFileURL {
                 loadFile(at: url)
             }
+        }
+        .onChange(of: selectedProject) { _, newProject in
+            if !createNewFile {
+                selectedFile = (newProject?.files ?? []).sorted(by: { $0.name < $1.name }).first
+            }
+            validateNewFileName()
+        }
+        .onChange(of: createNewFile) { _, isCreatingNewFile in
+            if isCreatingNewFile {
+                selectedFile = nil
+            } else if let project = selectedProject {
+                selectedFile = (project.files ?? []).sorted(by: { $0.name < $1.name }).first
+            }
+            validateNewFileName()
+        }
+        .sheet(isPresented: $showCreateProjectSheet) {
+            CreateProjectSheet(onProjectCreated: handleCreatedProject, showsFirstFile: false)
         }
     }
 
@@ -88,32 +107,59 @@ struct ImportView: View {
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.textSecondary)
 
-            HStack(spacing: AppTheme.Spacing.md) {
-                Picker("Project", selection: $selectedProject) {
-                    Text("Select project...").tag(nil as Project?)
-                    ForEach(projects) { project in
-                        Text(project.name).tag(project as Project?)
+            if projects.isEmpty {
+                HStack(spacing: AppTheme.Spacing.md) {
+                    Text("Create a project first to import this file.")
+                        .font(AppTheme.Fonts.body)
+                        .foregroundStyle(AppTheme.textSecondary)
+
+                    Spacer()
+
+                    Button("New Project") {
+                        showCreateProjectSheet = true
                     }
                 }
-                .frame(maxWidth: 200)
-
-                if let project = selectedProject {
-                    Toggle("New file", isOn: $createNewFile)
-
-                    if createNewFile {
-                        TextField("File name", text: $newFileName)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 160)
-                    } else {
-                        Picker("File", selection: $selectedFile) {
-                            Text("Select file...").tag(nil as EnvFile?)
-                            ForEach((project.files ?? []).sorted(by: { $0.name < $1.name })) { file in
-                                Text(file.name).tag(file as EnvFile?)
-                            }
+            } else {
+                HStack(spacing: AppTheme.Spacing.md) {
+                    Picker("Project", selection: $selectedProject) {
+                        Text("Select project...").tag(nil as Project?)
+                        ForEach(projects) { project in
+                            Text(project.name).tag(project as Project?)
                         }
-                        .frame(maxWidth: 160)
+                    }
+                    .frame(maxWidth: 200)
+
+                    Button("New Project") {
+                        showCreateProjectSheet = true
+                    }
+
+                    if let project = selectedProject {
+                        Toggle("New file", isOn: $createNewFile)
+
+                        if createNewFile {
+                            TextField("File name", text: $newFileName)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 160)
+                                .onChange(of: newFileName) { _, _ in
+                                    validateNewFileName()
+                                }
+                        } else {
+                            Picker("File", selection: $selectedFile) {
+                                Text("Select file...").tag(nil as EnvFile?)
+                                ForEach((project.files ?? []).sorted(by: { $0.name < $1.name })) { file in
+                                    Text(file.name).tag(file as EnvFile?)
+                                }
+                            }
+                            .frame(maxWidth: 160)
+                        }
                     }
                 }
+            }
+
+            if let newFileNameError, createNewFile, selectedProject != nil {
+                Text(newFileNameError)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.error)
             }
 
             if !createNewFile && selectedFile != nil {
@@ -166,7 +212,7 @@ struct ImportView: View {
         guard selectedProject != nil else { return false }
         guard parseResult != nil else { return false }
         if createNewFile {
-            return !newFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return !NameValidator.normalize(newFileName).isEmpty && newFileNameError == nil
         }
         return selectedFile != nil
     }
@@ -192,6 +238,7 @@ struct ImportView: View {
             if newFileName.isEmpty {
                 newFileName = url.lastPathComponent
             }
+            validateNewFileName()
         } catch {
             errorMessage = "Failed to read file: \(error.localizedDescription)"
         }
@@ -202,7 +249,10 @@ struct ImportView: View {
 
         let targetFile: EnvFile
         if createNewFile {
-            let file = EnvFile(name: newFileName.trimmingCharacters(in: .whitespacesAndNewlines))
+            validateNewFileName()
+            guard newFileNameError == nil else { return }
+
+            let file = EnvFile(name: NameValidator.normalize(newFileName))
             file.project = project
             modelContext.insert(file)
             targetFile = file
@@ -225,6 +275,17 @@ struct ImportView: View {
         } catch {
             errorMessage = "Import failed: \(error.localizedDescription)"
         }
+    }
+
+    private func validateNewFileName() {
+        newFileNameError = NameValidator.validateOptionalFileName(newFileName, existingFiles: selectedProject?.files ?? [])
+    }
+
+    private func handleCreatedProject(_ project: Project) {
+        selectedProject = project
+        createNewFile = true
+        selectedFile = nil
+        validateNewFileName()
     }
 }
 

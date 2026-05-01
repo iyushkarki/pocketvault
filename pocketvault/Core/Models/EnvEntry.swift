@@ -3,9 +3,9 @@ import Foundation
 
 @Model
 final class EnvEntry {
-    var id: UUID = UUID()
+    @Attribute(.unique) var id: UUID = UUID()
     var key: String = ""
-    var keychainIdentifier: String = ""
+    var value: String = ""
     var sortOrder: Int = 0
     var comment: String?
     var isComment: Bool = false
@@ -14,11 +14,10 @@ final class EnvEntry {
 
     var file: EnvFile?
 
-    init(key: String, sortOrder: Int = 0, isComment: Bool = false, comment: String? = nil) {
-        let entryId = UUID()
-        self.id = entryId
+    init(key: String, value: String = "", sortOrder: Int = 0, isComment: Bool = false, comment: String? = nil) {
+        self.id = UUID()
         self.key = key
-        self.keychainIdentifier = "\(AppConfig.keychainIdentifierPrefix)-\(entryId.uuidString)"
+        self.value = value
         self.sortOrder = sortOrder
         self.isComment = isComment
         self.comment = comment

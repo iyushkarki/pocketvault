@@ -1,52 +1,48 @@
 import SwiftData
 import Foundation
 
-enum ExportService {
-    private static func secretValue(
-        for entry: EnvEntry,
-        keychainService: KeychainServiceProtocol
-    ) throws -> String {
-        guard let value = try keychainService.getValue(for: entry.keychainIdentifier) else {
-            throw VaultError.missingSecret(entry.key)
-        }
-        return value
-    }
+enum ExportError: LocalizedError {
+    case duplicateFileNames([String])
 
-    static func exportFile(
-        _ file: EnvFile,
-        keychainService: KeychainServiceProtocol = KeychainService.shared
-    ) throws -> String {
+    var errorDescription: String? {
+        switch self {
+        case .duplicateFileNames(let names):
+            let joinedNames = names.sorted().joined(separator: ", ")
+            return "Cannot export project because multiple files would overwrite each other: \(joinedNames)."
+        }
+    }
+}
+
+enum ExportService {
+    static func exportFile(_ file: EnvFile) -> String {
         let sortedEntries = (file.entries ?? []).sorted { $0.sortOrder < $1.sortOrder }
         var lines: [String] = []
-
         for entry in sortedEntries {
             if entry.isComment {
                 lines.append("# \(entry.commentText)")
-                continue
+            } else {
+                lines.append(EnvParser.format([(key: entry.key, value: entry.value)]))
             }
-            let value = try secretValue(for: entry, keychainService: keychainService)
-            lines.append(EnvParser.format([(key: entry.key, value: value)]))
         }
-
         return lines.joined(separator: "\n")
     }
 
-    static func exportProject(
-        _ project: Project,
-        keychainService: KeychainServiceProtocol = KeychainService.shared
-    ) throws -> [(fileName: String, content: String)] {
-        try (project.files ?? [])
-            .sorted { $0.name < $1.name }
-            .map { file in
-                let content = try exportFile(file, keychainService: keychainService)
-                return (fileName: file.name, content: content)
+    static func exportProject(_ project: Project) throws -> [(fileName: String, content: String)] {
+        let files = (project.files ?? []).sorted { $0.name < $1.name }
+        let duplicateNames = Dictionary(grouping: files, by: { $0.name.lowercased() })
+            .values
+            .compactMap { groupedFiles in
+                groupedFiles.count > 1 ? groupedFiles.first?.name : nil
             }
+        guard duplicateNames.isEmpty else {
+            throw ExportError.duplicateFileNames(duplicateNames)
+        }
+        return files.map { file in
+            (fileName: file.name, content: exportFile(file))
+        }
     }
 
-    static func copyAllEntries(
-        _ file: EnvFile,
-        keychainService: KeychainServiceProtocol = KeychainService.shared
-    ) throws -> String {
-        try exportFile(file, keychainService: keychainService)
+    static func copyAllEntries(_ file: EnvFile) -> String {
+        exportFile(file)
     }
 }

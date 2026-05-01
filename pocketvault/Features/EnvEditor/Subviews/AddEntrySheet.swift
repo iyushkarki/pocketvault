@@ -16,8 +16,6 @@ struct AddEntrySheet: View {
 
     private enum Field: Hashable { case key, value }
 
-    private static let keyRegex = /^[A-Za-z_][A-Za-z0-9_]*$/
-
     private var isValid: Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmed.isEmpty && keyError == nil
@@ -85,8 +83,8 @@ struct AddEntrySheet: View {
             keyError = nil
             return
         }
-        if trimmed.wholeMatch(of: Self.keyRegex) == nil {
-            keyError = "Must start with a letter or underscore, containing only letters, numbers, and underscores."
+        if let error = EnvKeyValidator.validate(trimmed) {
+            keyError = error
             return
         }
         if (file.entries ?? []).contains(where: { !$0.isComment && $0.key == trimmed }) {

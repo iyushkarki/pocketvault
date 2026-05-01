@@ -5,13 +5,17 @@ struct CreateProjectSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(LockManager.self) private var lockManager
+    @Query(sort: \Project.name) private var projects: [Project]
 
-    var onFileCreated: ((EnvFile) -> Void)?
+    var onFileCreated: ((EnvFile) -> Void)? = nil
+    var onProjectCreated: ((Project) -> Void)? = nil
+    var showsFirstFile = true
 
     @State private var name = ""
     @State private var description = ""
     @State private var firstFileName = ".env"
     @State private var nameError: String?
+    @State private var firstFileNameError: String?
     @State private var saveError: String?
     @State private var showSaveError = false
     @FocusState private var focusedField: Field?
@@ -19,7 +23,9 @@ struct CreateProjectSheet: View {
     private enum Field: Hashable { case name, description, fileName }
 
     private var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && nameError == nil
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && nameError == nil
+            && (!showsFirstFile || firstFileNameError == nil)
     }
 
     private var hasChanges: Bool {
@@ -54,19 +60,28 @@ struct CreateProjectSheet: View {
                         lockManager.recordActivity()
                     }
 
-                Divider()
-                    .padding(.vertical, AppTheme.Spacing.xs)
+                if showsFirstFile {
+                    Divider()
+                        .padding(.vertical, AppTheme.Spacing.xs)
 
-                Text("First file")
-                    .font(AppTheme.Fonts.caption)
-                    .foregroundStyle(AppTheme.textSecondary)
+                    Text("First file")
+                        .font(AppTheme.Fonts.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
 
-                TextField(".env", text: $firstFileName)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedField, equals: .fileName)
-                    .onChange(of: firstFileName) { _, _ in
-                        lockManager.recordActivity()
+                    TextField(".env", text: $firstFileName)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .fileName)
+                        .onChange(of: firstFileName) { _, _ in
+                            lockManager.recordActivity()
+                            validateFirstFileName()
+                        }
+
+                    if let firstFileNameError {
+                        Text(firstFileNameError)
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(AppTheme.error)
                     }
+                }
             }
 
             HStack {
@@ -90,25 +105,32 @@ struct CreateProjectSheet: View {
     }
 
     private func validateName() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
+        if NameValidator.normalize(name).isEmpty {
             nameError = nil
             return
         }
-        if trimmed.count > 100 {
-            nameError = "Name must be 100 characters or less."
+        nameError = NameValidator.validateProjectName(name, existingProjects: projects)
+    }
+
+    private func validateFirstFileName() {
+        guard showsFirstFile else {
+            firstFileNameError = nil
             return
         }
-        nameError = nil
+        firstFileNameError = NameValidator.validateOptionalFileName(firstFileName, existingFiles: [])
     }
 
     private func createProject() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        validateName()
+        validateFirstFileName()
+        guard nameError == nil, firstFileNameError == nil else { return }
+
+        let trimmed = NameValidator.normalize(name)
         let desc = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let project = Project(name: trimmed, description: desc.isEmpty ? nil : desc)
         modelContext.insert(project)
 
-        let fileName = firstFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fileName = showsFirstFile ? NameValidator.normalize(firstFileName) : ""
         var createdFile: EnvFile?
         if !fileName.isEmpty {
             let file = EnvFile(name: fileName)
@@ -119,14 +141,15 @@ struct CreateProjectSheet: View {
 
         do {
             try modelContext.save()
+            try VaultRepository.shared.captureFromSwiftData(context: modelContext)
             let file = createdFile
+            onProjectCreated?(project)
             dismiss()
             if let file {
                 onFileCreated?(file)
             }
         } catch {
             modelContext.rollback()
-            modelContext.delete(project)
             saveError = "Failed to save project: \(error.localizedDescription)"
             showSaveError = true
         }

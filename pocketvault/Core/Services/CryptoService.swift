@@ -109,7 +109,7 @@ enum CryptoService {
         }
     }
 
-    // MARK: - .envvault Format
+    // MARK: - Pocket Vault Backup Format
 
     // Format: [magic 4B][version 1B][salt 16B][iterations 4B][encrypted data (nonce+ciphertext+tag)]
 

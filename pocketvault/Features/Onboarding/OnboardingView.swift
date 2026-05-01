@@ -7,9 +7,8 @@ enum OnboardingPage: CaseIterable {
 }
 
 struct OnboardingView: View {
-    var onComplete: () -> Void
+    var onComplete: (_ enableSync: Bool) async throws -> Void
 
-    @Environment(SyncService.self) private var syncService
     @State private var currentPage: OnboardingPage = .welcome
     @State private var enableSync = false
     @State private var isMigrating = false
@@ -58,34 +57,14 @@ struct OnboardingView: View {
     }
 
     private func completeOnboarding() {
-        if enableSync {
-            isMigrating = true
-            Task {
-                do {
-                    try await syncService.enableSync()
-                    UserDefaults.standard.set(true, forKey: AppConfig.UserDefaultsKey.hasCompletedOnboarding)
-                    restartApp()
-                } catch {
-                    isMigrating = false
-                    syncError = error.localizedDescription
-                    showSyncError = true
-                }
-            }
-        } else {
-            UserDefaults.standard.set(true, forKey: AppConfig.UserDefaultsKey.hasCompletedOnboarding)
-            onComplete()
-        }
-    }
-
-    private func restartApp() {
-        let config = NSWorkspace.OpenConfiguration()
-        config.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(
-            at: Bundle.main.bundleURL,
-            configuration: config
-        ) { _, _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NSApp.terminate(nil)
+        isMigrating = true
+        Task {
+            do {
+                try await onComplete(enableSync)
+            } catch {
+                isMigrating = false
+                syncError = error.localizedDescription
+                showSyncError = true
             }
         }
     }
@@ -105,7 +84,7 @@ private struct OnboardingWelcomePage: View {
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(AppTheme.textPrimary)
 
-                Text("Securely manage .env variables from your menu bar.\nSecrets are stored in the macOS Keychain — zero third-party dependencies.")
+                Text("Securely manage .env variables from your menu bar.\nYour vault is encrypted on disk and synced via your private iCloud.")
                     .font(.system(size: 13))
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -132,8 +111,8 @@ private struct OnboardingFeaturesPage: View {
                 FeatureRow(
                     icon: "key.fill",
                     color: .orange,
-                    title: "Hardware-Backed Encryption",
-                    subtitle: "AES-256 via macOS Keychain on Apple Silicon"
+                    title: "End-to-End Encryption",
+                    subtitle: "AES-GCM with a key stored in your iCloud Keychain"
                 )
                 FeatureRow(
                     icon: "touchid",
@@ -145,7 +124,7 @@ private struct OnboardingFeaturesPage: View {
                     icon: "doc.text.fill",
                     color: .blue,
                     title: "Import & Export",
-                    subtitle: "Standard .env files and encrypted .envvault backups"
+                    subtitle: "Standard .env files and encrypted .pocketvault backups"
                 )
                 FeatureRow(
                     icon: "menubar.rectangle",
@@ -164,7 +143,12 @@ private struct OnboardingFeaturesPage: View {
 
 private struct OnboardingSyncPage: View {
     @Binding var enableSync: Bool
-    @Environment(SyncService.self) private var syncService
+    @State private var keychainAvailability: ICloudKeychainStatus = .unknown
+
+    private var iCloudKeychainOK: Bool {
+        if case .available = keychainAvailability { return true }
+        return false
+    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -180,7 +164,7 @@ private struct OnboardingSyncPage: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(AppTheme.textPrimary)
 
-                Text("Sync projects and secrets across your Macs via iCloud.\nIf you skip this, your data stays on this device only.")
+                Text("Make your vault available across your Macs.\nRequires iCloud Keychain to securely share the encryption key.")
                     .font(.system(size: 13))
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -190,13 +174,20 @@ private struct OnboardingSyncPage: View {
 
             Toggle("Enable iCloud Sync", isOn: $enableSync)
                 .toggleStyle(.switch)
-                .disabled(!syncService.iCloudAvailable)
+                .disabled(!iCloudKeychainOK)
                 .frame(maxWidth: 240)
 
-            if !syncService.iCloudAvailable {
-                Label("Sign into iCloud in System Settings to enable sync.", systemImage: "exclamationmark.triangle.fill")
+            if !iCloudKeychainOK {
+                VStack(spacing: 8) {
+                    Label("iCloud Keychain is required for sync.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(AppTheme.warning)
+                    Button("Open System Settings") {
+                        ICloudKeychainAvailability.openSystemSettings()
+                    }
+                    .buttonStyle(.link)
                     .font(.system(size: 11))
-                    .foregroundStyle(AppTheme.warning)
+                }
             }
 
             Text("You can change this anytime in Settings.")
@@ -206,6 +197,10 @@ private struct OnboardingSyncPage: View {
             Spacer()
         }
         .padding(32)
+        .task {
+            let status = await Task.detached { ICloudKeychainAvailability.check() }.value
+            keychainAvailability = status
+        }
     }
 }
 
@@ -251,11 +246,12 @@ private struct OnboardingBottomBar: View {
         HStack {
             if isFirstPage {
                 Spacer()
-                    .frame(width: 80)
+                    .frame(width: 100)
             } else {
                 Button("Back", action: goBack)
                     .buttonStyle(.bordered)
-                    .frame(width: 80)
+                    .controlSize(.large)
+                    .frame(width: 100)
             }
 
             Spacer()
@@ -267,10 +263,16 @@ private struct OnboardingBottomBar: View {
             if isLastPage {
                 Button(isMigrating ? "Setting up..." : "Get Started", action: onFinish)
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(isMigrating)
+                    .frame(minWidth: 140)
             } else {
                 Button("Continue", action: goForward)
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
+                    .frame(minWidth: 140)
             }
         }
     }

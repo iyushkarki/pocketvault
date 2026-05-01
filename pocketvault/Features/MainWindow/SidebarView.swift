@@ -4,8 +4,8 @@ import SwiftData
 struct SidebarView: View {
     @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
     @Environment(\.modelContext) private var modelContext
-    @Environment(SyncService.self) private var syncService
     @Binding var selectedFile: EnvFile?
+    @Binding var expandedProjectIDs: Set<UUID>
     let viewModel: EnvEditorViewModel
 
     @State private var showCreateProjectSheet = false
@@ -94,7 +94,7 @@ struct SidebarView: View {
     private var projectList: some View {
         List(selection: $selectedFile) {
             ForEach(projects) { project in
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: expandedBinding(for: project)) {
                     ForEach(sortedFiles(for: project)) { file in
                         fileRow(file)
                             .tag(file)
@@ -127,6 +127,19 @@ struct SidebarView: View {
 
     private func sortedFiles(for project: Project) -> [EnvFile] {
         (project.files ?? []).sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func expandedBinding(for project: Project) -> Binding<Bool> {
+        Binding(
+            get: { expandedProjectIDs.contains(project.id) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedProjectIDs.insert(project.id)
+                } else {
+                    expandedProjectIDs.remove(project.id)
+                }
+            }
+        )
     }
 
     private func projectLabel(_ project: Project) -> some View {
