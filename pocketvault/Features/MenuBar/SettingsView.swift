@@ -345,10 +345,6 @@ private struct SecuritySettingsView: View {
     private func performSecureWipe(scope: DeleteExecutionScope) async {
         isDeleting = true
         logger.warning("Secure data wipe initiated by user (scope=\(scope.rawValue, privacy: .public))")
-        lockManager.lock()
-        ClipboardManager.shared.clearImmediately()
-
-        syncCoordinator.stopSync()
 
         if scope == .everywhere {
             do {
@@ -361,36 +357,30 @@ private struct SecuritySettingsView: View {
             }
         }
 
+        lockManager.lock()
+        ClipboardManager.shared.clearImmediately()
+        syncCoordinator.stopSync()
+
         do {
             switch scope {
             case .everywhere:
-                try VaultRepository.shared.wipeEverything()
+                try VaultRepository.shared.wipeEverything(emitChange: false)
             case .thisMacOnly:
-                try VaultRepository.shared.wipeLocalDataKeepingCloudKey()
+                try VaultRepository.shared.wipeLocalDataKeepingCloudKey(emitChange: false)
             }
         } catch {
-            wipeError = "Failed to delete vault: \(error.localizedDescription)"
+            if scope == .everywhere {
+                wipeError = "The iCloud vault was deleted, but Pocket Vault could not finish deleting data on this Mac: \(error.localizedDescription)"
+            } else {
+                wipeError = "Failed to delete vault: \(error.localizedDescription)"
+            }
             showWipeErrorAlert = true
             isDeleting = false
             return
         }
 
-        let domain = Bundle.main.bundleIdentifier ?? AppConfig.bundleIdentifier
-        switch scope {
-        case .everywhere:
-            UserDefaults.standard.removePersistentDomain(forName: domain)
-        case .thisMacOnly:
-            let vaultScopedKeys = [
-                AppConfig.UserDefaultsKey.cloudKitSyncEnabled,
-                AppConfig.UserDefaultsKey.lastSelectedFileID,
-                AppConfig.UserDefaultsKey.lastVaultExportDate,
-                "syncCoordinator.lastSyncedRevision",
-            ]
-            for key in vaultScopedKeys {
-                UserDefaults.standard.removeObject(forKey: key)
-            }
-        }
-        UserDefaults.standard.synchronize()
+        AppConfig.clearVaultScopedUserDefaults()
+        AppConfig.markPendingDataReset()
 
         logger.warning("Secure data wipe completed")
         isDeleting = false

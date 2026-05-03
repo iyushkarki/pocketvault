@@ -16,6 +16,12 @@ enum ICloudKeychainAvailability {
 
     nonisolated static func check() -> ICloudKeychainStatus {
         let payload = UUID().uuidString.data(using: .utf8) ?? Data()
+        let cleanupQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: probeAccount,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+        ]
 
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -26,17 +32,15 @@ enum ICloudKeychainAvailability {
             kSecValueData as String: payload
         ]
 
-        SecItemDelete(addQuery as CFDictionary)
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        SecItemDelete(cleanupQuery as CFDictionary)
+        var addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecDuplicateItem {
+            SecItemDelete(cleanupQuery as CFDictionary)
+            addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        }
 
         defer {
-            let cleanup: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: serviceName,
-                kSecAttrAccount as String: probeAccount,
-                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny
-            ]
-            SecItemDelete(cleanup as CFDictionary)
+            SecItemDelete(cleanupQuery as CFDictionary)
         }
 
         guard addStatus == errSecSuccess else {

@@ -46,6 +46,7 @@ struct MainWindowView: View {
     private var conflictBinding: Binding<Bool> {
         Binding(
             get: {
+                guard !isPresentingUserSheet else { return false }
                 if case .conflict = syncCoordinator.state { return true }
                 return false
             },
@@ -56,11 +57,16 @@ struct MainWindowView: View {
     private var remoteDeletedBinding: Binding<Bool> {
         Binding(
             get: {
+                guard !isPresentingUserSheet else { return false }
                 if case .remoteDeleted = syncCoordinator.state { return true }
                 return false
             },
             set: { _ in }
         )
+    }
+
+    private var isPresentingUserSheet: Bool {
+        showImportSheet || showVaultExport || showVaultImport || showCreateProjectSheet
     }
 
     var body: some View {
@@ -211,7 +217,7 @@ struct MainWindowView: View {
             }
         }
         .sheet(isPresented: remoteDeletedBinding) {
-            if case .remoteDeleted(let updatedAt, let deviceName) = syncCoordinator.state {
+            if case .remoteDeleted(_, let updatedAt, let deviceName) = syncCoordinator.state {
                 RemoteDeletedSheet(
                     remoteUpdatedAt: updatedAt,
                     remoteUpdatedByDeviceName: deviceName,

@@ -11,7 +11,7 @@ final class SyncCoordinator {
         case ready
         case syncing
         case conflict(local: VaultSnapshot, remote: VaultSnapshot)
-        case remoteDeleted(remoteUpdatedAt: Date, remoteUpdatedByDeviceName: String)
+        case remoteDeleted(revision: String, remoteUpdatedAt: Date, remoteUpdatedByDeviceName: String)
         case needsAttention(IssueKind)
     }
 
@@ -36,7 +36,9 @@ final class SyncCoordinator {
     @ObservationIgnored
     private var pendingRefresh: Bool = false
     @ObservationIgnored
-    private static let lastSyncedRevisionKey = "syncCoordinator.lastSyncedRevision"
+    private static let lastSyncedRevisionKey = AppConfig.UserDefaultsKey.lastSyncedRevision
+    @ObservationIgnored
+    private static let acknowledgedDeletedRemoteRevisionKey = AppConfig.UserDefaultsKey.acknowledgedDeletedRemoteRevision
 
     static let shared = SyncCoordinator()
 
@@ -51,6 +53,17 @@ final class SyncCoordinator {
                 UserDefaults.standard.set(newValue, forKey: Self.lastSyncedRevisionKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: Self.lastSyncedRevisionKey)
+            }
+        }
+    }
+
+    private var acknowledgedDeletedRemoteRevision: String? {
+        get { UserDefaults.standard.string(forKey: Self.acknowledgedDeletedRemoteRevisionKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: Self.acknowledgedDeletedRemoteRevisionKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.acknowledgedDeletedRemoteRevisionKey)
             }
         }
     }
@@ -160,15 +173,18 @@ final class SyncCoordinator {
                 return
             }
 
+            let local = VaultRepository.shared.snapshot
+
             if manifest.isDeleted {
-                state = .remoteDeleted(
-                    remoteUpdatedAt: manifest.updatedAt,
-                    remoteUpdatedByDeviceName: manifest.updatedByDeviceName
-                )
+                if local.hasData && acknowledgedDeletedRemoteRevision == manifest.revision {
+                    try await saveLocalSnapshot(local)
+                } else {
+                    handleDeletedManifest(manifest)
+                }
                 return
             }
 
-            let local = VaultRepository.shared.snapshot
+            acknowledgedDeletedRemoteRevision = nil
             let knownRevision = lastSyncedRevision
 
             if manifest.revision == local.revision {
@@ -189,7 +205,7 @@ final class SyncCoordinator {
                     state = .conflict(local: local, remote: remoteSnapshot)
                     return
                 }
-                try VaultRepository.shared.replaceSnapshot(remoteSnapshot, persist: true)
+                try VaultRepository.shared.replaceSnapshot(remoteSnapshot, persist: true, emitChange: false)
                 lastSyncedRevision = remoteSnapshot.revision
                 state = .ready
                 lastSyncedAt = .now
@@ -197,10 +213,7 @@ final class SyncCoordinator {
             }
 
             if knownRevision == manifest.revision {
-                _ = try await CloudVaultStore.shared.save(snapshot: local)
-                lastSyncedRevision = local.revision
-                state = .ready
-                lastSyncedAt = .now
+                try await saveLocalSnapshot(local)
                 return
             }
 
@@ -224,12 +237,17 @@ final class SyncCoordinator {
     private func pushIfNeeded() async throws {
         let snapshot = VaultRepository.shared.snapshot
         guard snapshot.hasData else { return }
-        _ = try await CloudVaultStore.shared.save(snapshot: snapshot)
-        lastSyncedRevision = snapshot.revision
+        try await saveLocalSnapshot(snapshot)
     }
 
     private func scheduleUpload(for snapshot: VaultSnapshot) {
         guard isEnabled else { return }
+        switch state {
+        case .needsAttention, .conflict, .remoteDeleted:
+            return
+        case .off, .ready, .syncing:
+            break
+        }
         pendingUploadTask?.cancel()
         pendingUploadTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -240,20 +258,29 @@ final class SyncCoordinator {
 
     private func uploadCurrent() async {
         guard isEnabled else { return }
+        switch state {
+        case .needsAttention, .conflict, .remoteDeleted:
+            return
+        case .off, .ready, .syncing:
+            break
+        }
         state = .syncing
         do {
             let snapshot = VaultRepository.shared.snapshot
-            guard snapshot.hasData else {
-                state = .ready
-                return
-            }
-
             if let manifest = try await CloudVaultStore.shared.fetchManifest() {
                 if manifest.isDeleted {
-                    state = .remoteDeleted(
-                        remoteUpdatedAt: manifest.updatedAt,
-                        remoteUpdatedByDeviceName: manifest.updatedByDeviceName
-                    )
+                    if snapshot.hasData && acknowledgedDeletedRemoteRevision == manifest.revision {
+                        try await saveLocalSnapshot(snapshot)
+                    } else {
+                        handleDeletedManifest(manifest)
+                    }
+                    return
+                }
+
+                acknowledgedDeletedRemoteRevision = nil
+
+                guard snapshot.hasData else {
+                    state = .ready
                     return
                 }
 
@@ -267,12 +294,15 @@ final class SyncCoordinator {
                 }
             }
 
-            _ = try await CloudVaultStore.shared.save(snapshot: snapshot)
-            lastSyncedRevision = snapshot.revision
-            lastSyncedAt = .now
-            state = .ready
+            try await saveLocalSnapshot(snapshot)
         } catch let ckError as CKError where ckError.code == .serverRecordChanged {
             await syncOnce()
+        } catch CloudVaultStoreError.cloudPayloadUnreadable {
+            logger.error("Cloud payload unreadable on this Mac")
+            state = .needsAttention(.remoteUnreadable)
+        } catch CloudVaultStoreError.syncKeyUnavailable {
+            logger.error("Cloud payload key unavailable on this Mac")
+            state = .needsAttention(.remoteUnreadable)
         } catch {
             lastError = error
             logger.error("uploadCurrent failed: \(error.localizedDescription)")
@@ -294,11 +324,10 @@ final class SyncCoordinator {
                 promoted.updatedAt = .now
                 promoted.updatedByDeviceID = VaultRepository.deviceID()
                 promoted.updatedByDeviceName = VaultRepository.deviceName()
-                try VaultRepository.shared.replaceSnapshot(promoted, persist: true)
-                _ = try await CloudVaultStore.shared.save(snapshot: promoted)
-                lastSyncedRevision = promoted.revision
+                try VaultRepository.shared.replaceSnapshot(promoted, persist: true, emitChange: false)
+                try await saveLocalSnapshot(promoted)
             } else {
-                try VaultRepository.shared.replaceSnapshot(remote, persist: true)
+                try VaultRepository.shared.replaceSnapshot(remote, persist: true, emitChange: false)
                 lastSyncedRevision = remote.revision
             }
             lastSyncedAt = .now
@@ -310,7 +339,7 @@ final class SyncCoordinator {
     }
 
     func resolveRemoteDeleted(keepLocal: Bool) async {
-        guard case .remoteDeleted = state else { return }
+        guard case .remoteDeleted(let deletedRevision, _, _) = state else { return }
         state = .syncing
         do {
             if keepLocal {
@@ -320,12 +349,12 @@ final class SyncCoordinator {
                 promoted.updatedAt = .now
                 promoted.updatedByDeviceID = VaultRepository.deviceID()
                 promoted.updatedByDeviceName = VaultRepository.deviceName()
-                try VaultRepository.shared.replaceSnapshot(promoted, persist: true)
-                _ = try await CloudVaultStore.shared.save(snapshot: promoted)
-                lastSyncedRevision = promoted.revision
+                try VaultRepository.shared.replaceSnapshot(promoted, persist: true, emitChange: false)
+                try await saveLocalSnapshot(promoted)
             } else {
                 try VaultRepository.shared.wipeEverything(emitChange: false)
                 lastSyncedRevision = nil
+                acknowledgedDeletedRemoteRevision = deletedRevision
             }
             lastSyncedAt = .now
             state = .ready
@@ -348,11 +377,8 @@ final class SyncCoordinator {
             snapshot.updatedAt = .now
             snapshot.updatedByDeviceID = VaultRepository.deviceID()
             snapshot.updatedByDeviceName = VaultRepository.deviceName()
-            try VaultRepository.shared.replaceSnapshot(snapshot, persist: true)
-            _ = try await CloudVaultStore.shared.save(snapshot: snapshot)
-            lastSyncedRevision = snapshot.revision
-            lastSyncedAt = .now
-            state = .ready
+            try VaultRepository.shared.replaceSnapshot(snapshot, persist: true, emitChange: false)
+            try await saveLocalSnapshot(snapshot)
         } catch {
             lastError = error
             logger.error("overwriteRemoteWithLocal failed: \(error.localizedDescription)")
@@ -361,11 +387,42 @@ final class SyncCoordinator {
     }
 
     func deleteRemoteVault() async throws {
-        try await CloudVaultStore.shared.deleteRemoteVault(
+        let tombstone = try await CloudVaultStore.shared.deleteRemoteVault(
             deviceID: VaultRepository.deviceID(),
             deviceName: VaultRepository.deviceName()
         )
         lastSyncedRevision = nil
+        acknowledgedDeletedRemoteRevision = tombstone.revision
         lastSyncedAt = .now
+    }
+
+    private func handleDeletedManifest(_ manifest: CloudVaultManifest) {
+        let local = VaultRepository.shared.snapshot
+        if !local.hasData || acknowledgedDeletedRemoteRevision == manifest.revision {
+            acknowledgedDeletedRemoteRevision = manifest.revision
+            lastSyncedRevision = nil
+            state = .ready
+            lastSyncedAt = .now
+            return
+        }
+
+        state = .remoteDeleted(
+            revision: manifest.revision,
+            remoteUpdatedAt: manifest.updatedAt,
+            remoteUpdatedByDeviceName: manifest.updatedByDeviceName
+        )
+    }
+
+    private func saveLocalSnapshot(_ snapshot: VaultSnapshot) async throws {
+        guard snapshot.hasData else {
+            state = .ready
+            return
+        }
+
+        _ = try await CloudVaultStore.shared.save(snapshot: snapshot)
+        lastSyncedRevision = snapshot.revision
+        acknowledgedDeletedRemoteRevision = nil
+        lastSyncedAt = .now
+        state = .ready
     }
 }

@@ -83,7 +83,8 @@ final class CloudVaultStore {
         return manifest
     }
 
-    func deleteRemoteVault(deviceID: String, deviceName: String) async throws {
+    @discardableResult
+    func deleteRemoteVault(deviceID: String, deviceName: String) async throws -> CloudVaultManifest {
         let tombstone = CloudVaultManifest(
             revision: UUID().uuidString,
             payloadHash: "",
@@ -98,6 +99,7 @@ final class CloudVaultStore {
         let manifestRecord = (try? await database.record(for: manifestRecordID)) ?? CKRecord(recordType: manifestRecordType, recordID: manifestRecordID)
         try encodeManifest(tombstone, into: manifestRecord)
         try await database.modifyRecords(saving: [manifestRecord], deleting: [payloadRecordID], savePolicy: .ifServerRecordUnchanged)
+        return tombstone
     }
 
     func ensureManifestSubscription() async throws {

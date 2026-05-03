@@ -34,5 +34,47 @@ enum AppConfig {
         static let lastVaultExportDate = "lastVaultExportDate"
         static let lastSelectedFileID = "lastSelectedFileID"
         static let menuBarVisible = "menuBarVisible"
+        static let pendingDataReset = "pendingDataReset"
+        static let lastSyncedRevision = "syncCoordinator.lastSyncedRevision"
+        static let acknowledgedDeletedRemoteRevision = "syncCoordinator.acknowledgedDeletedRemoteRevision"
     }
+
+    static func markPendingDataReset() {
+        UserDefaults.standard.set(true, forKey: UserDefaultsKey.pendingDataReset)
+    }
+
+    @discardableResult
+    static func applyPendingDataResetIfNeeded() -> Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: UserDefaultsKey.pendingDataReset) else { return false }
+
+        for key in dataResetUserDefaultsKeys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+        return true
+    }
+
+    static func clearVaultScopedUserDefaults() {
+        let defaults = UserDefaults.standard
+        for key in vaultScopedUserDefaultsKeys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+    }
+
+    private static let vaultScopedUserDefaultsKeys = [
+        UserDefaultsKey.cloudKitSyncEnabled,
+        UserDefaultsKey.lastSelectedFileID,
+        UserDefaultsKey.lastVaultExportDate,
+        UserDefaultsKey.lastSyncedRevision,
+        UserDefaultsKey.acknowledgedDeletedRemoteRevision,
+    ]
+
+    private static let dataResetUserDefaultsKeys = vaultScopedUserDefaultsKeys + [
+        UserDefaultsKey.hasCompletedOnboarding,
+        UserDefaultsKey.deviceIdentity,
+        UserDefaultsKey.biometricDomainState,
+        UserDefaultsKey.pendingDataReset,
+    ]
 }

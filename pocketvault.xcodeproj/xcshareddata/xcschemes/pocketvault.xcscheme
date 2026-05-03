@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "22E5C4DE2F82613100E6E854"
-               BuildableName = "pocketvault.app"
+               BuildableName = "PocketVault.app"
                BlueprintName = "pocketvault"
                ReferencedContainer = "container:pocketvault.xcodeproj">
             </BuildableReference>
@@ -45,7 +45,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "22E5C4DE2F82613100E6E854"
-            BuildableName = "pocketvault.app"
+            BuildableName = "PocketVault.app"
             BlueprintName = "pocketvault"
             ReferencedContainer = "container:pocketvault.xcodeproj">
          </BuildableReference>
@@ -62,7 +62,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "22E5C4DE2F82613100E6E854"
-            BuildableName = "pocketvault.app"
+            BuildableName = "PocketVault.app"
             BlueprintName = "pocketvault"
             ReferencedContainer = "container:pocketvault.xcodeproj">
          </BuildableReference>

@@ -16,7 +16,9 @@ struct PocketVaultApp: App {
     @AppStorage(AppConfig.UserDefaultsKey.menuBarVisible) private var menuBarVisible = AppConfig.Defaults.menuBarVisible
 
     init() {
-        let hasCompletedOnboarding = UserDefaults.standard.object(forKey: AppConfig.UserDefaultsKey.hasCompletedOnboarding) as? Bool
+        let didApplyPendingDataReset = AppConfig.applyPendingDataResetIfNeeded()
+
+        let hasCompletedOnboarding = didApplyPendingDataReset ? false : UserDefaults.standard.object(forKey: AppConfig.UserDefaultsKey.hasCompletedOnboarding) as? Bool
             ?? AppConfig.Defaults.hasCompletedOnboarding
         if hasCompletedOnboarding {
             _dataManager = State(initialValue: DataManager())
