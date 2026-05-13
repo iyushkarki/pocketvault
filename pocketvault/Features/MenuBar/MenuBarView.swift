@@ -417,7 +417,9 @@ struct MenuBarView: View {
     private func openManageWindow() {
         persistMainWindowSelection()
         openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            AppDelegate.showMainWindow()
+        }
     }
 
     private var optionsMenu: some View {

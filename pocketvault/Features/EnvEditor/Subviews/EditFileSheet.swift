@@ -59,7 +59,7 @@ struct EditFileSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save") { saveFile() }
+                Button("Rename") { saveFile() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!isValid)
             }

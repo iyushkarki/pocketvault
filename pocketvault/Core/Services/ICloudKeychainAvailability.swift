@@ -11,7 +11,7 @@ enum ICloudKeychainStatus: Equatable {
 
 enum ICloudKeychainAvailability {
     nonisolated private static let probeAccount = "pocketvault.icloud.probe"
-    nonisolated private static let serviceName = "app.pocketvault.keychain"
+    nonisolated private static let serviceName = "\(Bundle.main.bundleIdentifier ?? "app.pocketvault").keychain"
     nonisolated private static let logger = Logger(subsystem: "app.pocketvault", category: "ICloudKeychainAvailability")
 
     nonisolated static func check() -> ICloudKeychainStatus {

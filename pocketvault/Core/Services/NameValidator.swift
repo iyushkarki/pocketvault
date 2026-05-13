@@ -69,7 +69,7 @@ enum NameValidator {
         guard !trimmed.isEmpty else { return nil }
 
         if trimmed.wholeMatch(of: fileNameRegex) == nil {
-            return "Invalid file name format."
+            return "Use letters, numbers, dots, underscores, or hyphens. Names may start with a dot, like .env."
         }
 
         if existingFiles.contains(where: { file in

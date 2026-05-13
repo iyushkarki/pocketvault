@@ -40,7 +40,7 @@ struct EditProjectSheet: View {
 
     var body: some View {
         VStack(spacing: AppTheme.Spacing.lg) {
-            Text("Edit Project")
+            Text("Rename Project")
                 .font(AppTheme.Fonts.title)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -71,7 +71,7 @@ struct EditProjectSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save") { saveProject() }
+                Button("Rename") { saveProject() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!isValid)
             }

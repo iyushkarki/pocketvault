@@ -114,9 +114,28 @@ struct EnvEntryRow: View {
             }
             .help("Click to copy value")
         } else {
-            Text(maskedValue)
-                .font(AppTheme.Fonts.valueMasked)
-                .foregroundStyle(AppTheme.textTertiary)
+            Group {
+                if copiedValue {
+                    Text("Copied!")
+                        .font(AppTheme.Fonts.value)
+                        .foregroundStyle(AppTheme.success)
+                        .lineLimit(1)
+                } else {
+                    Text(maskedValue)
+                        .font(AppTheme.Fonts.valueMasked)
+                        .foregroundStyle(AppTheme.textTertiary)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onCopy()
+                copiedValue = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copiedValue = false
+                }
+            }
+            .help("Click to copy value")
         }
     }
 

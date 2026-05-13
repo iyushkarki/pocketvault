@@ -21,8 +21,16 @@ struct ImportView: View {
 
     let initialFileURL: URL?
 
-    init(fileURL: URL? = nil) {
+    init(
+        fileURL: URL? = nil,
+        preselectedProject: Project? = nil,
+        preselectedFile: EnvFile? = nil,
+        createNewFile: Bool = true
+    ) {
         self.initialFileURL = fileURL
+        _selectedProject = State(initialValue: preselectedFile?.project ?? preselectedProject)
+        _selectedFile = State(initialValue: preselectedFile)
+        _createNewFile = State(initialValue: preselectedFile == nil ? createNewFile : false)
     }
 
     var body: some View {
