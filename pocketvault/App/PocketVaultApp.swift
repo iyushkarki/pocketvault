@@ -51,6 +51,7 @@ struct PocketVaultApp: App {
             .environment(lockManager)
             .environment(biometricService)
             .environment(syncCoordinator)
+            .background(MainWindowCloseHandler())
             .task {
                 bootstrapDataManagerIfNeeded()
                 if !hasCompletedOnboarding {
@@ -69,6 +70,43 @@ struct PocketVaultApp: App {
             height: AppTheme.Sizing.windowDefaultHeight
         )
         .defaultPosition(.center)
+        .commands {
+            CommandMenu("Vault") {
+                Button("New Project") {
+                    NotificationCenter.default.post(name: .pocketVaultNewProject, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: .command)
+
+                Button("New File") {
+                    NotificationCenter.default.post(name: .pocketVaultNewFile, object: nil)
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Rename File") {
+                    NotificationCenter.default.post(name: .pocketVaultRenameFile, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+
+                Button("Delete File") {
+                    NotificationCenter.default.post(name: .pocketVaultDeleteFile, object: nil)
+                }
+                .keyboardShortcut(.delete, modifiers: [])
+
+                Divider()
+
+                Button("Import .env File...") {
+                    NotificationCenter.default.post(name: .pocketVaultImportEnvFile, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: .command)
+
+                Button("Lock Vault") {
+                    NotificationCenter.default.post(name: .pocketVaultLock, object: nil)
+                }
+                .keyboardShortcut("l", modifiers: .command)
+            }
+        }
     }
 
     @SceneBuilder

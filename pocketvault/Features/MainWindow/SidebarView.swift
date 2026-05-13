@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
@@ -7,6 +8,7 @@ struct SidebarView: View {
     @Binding var selectedFile: EnvFile?
     @Binding var expandedProjectIDs: Set<UUID>
     let viewModel: EnvEditorViewModel
+    let onImportFile: (URL, Project?, EnvFile?, Bool) -> Void
 
     @State private var showCreateProjectSheet = false
     @State private var projectToEdit: Project?
@@ -14,8 +16,8 @@ struct SidebarView: View {
     @State private var showCreateFileSheet: Project?
     @State private var fileToEdit: EnvFile?
     @State private var fileToDelete: EnvFile?
-    @State private var showDeleteProjectAlert = false
-    @State private var showDeleteFileAlert = false
+    @State private var hoveredProjectID: UUID?
+    @State private var hoveredFileID: UUID?
 
     var body: some View {
         Group {
@@ -58,17 +60,25 @@ struct SidebarView: View {
         .sheet(item: $fileToEdit) { file in
             EditFileSheet(file: file)
         }
-        .alert("Delete Project", isPresented: $showDeleteProjectAlert, presenting: projectToDelete) { project in
-            Button("Cancel", role: .cancel) { projectToDelete = nil }
-            Button("Delete", role: .destructive) { deleteProject(project) }
-        } message: { project in
-            Text("Delete \"\(project.name)\" and all its files? This cannot be undone.")
+        .sheet(item: $projectToDelete) { project in
+            ConfirmDeleteSheet(
+                title: "Delete Project",
+                itemName: project.name,
+                message: "This permanently deletes \"\(project.name)\", all files in the project, and all stored environment values.",
+                confirmButtonTitle: "Delete Project"
+            ) {
+                deleteProject(project)
+            }
         }
-        .alert("Delete File", isPresented: $showDeleteFileAlert, presenting: fileToDelete) { file in
-            Button("Cancel", role: .cancel) { fileToDelete = nil }
-            Button("Delete", role: .destructive) { deleteFile(file) }
-        } message: { file in
-            Text("Delete \"\(file.name)\" and all its entries? This cannot be undone.")
+        .sheet(item: $fileToDelete) { file in
+            ConfirmDeleteSheet(
+                title: "Delete File",
+                itemName: file.name,
+                message: "This permanently deletes \"\(file.name)\" and all stored environment values in the file.",
+                confirmButtonTitle: "Delete File"
+            ) {
+                deleteFile(file)
+            }
         }
     }
 
@@ -98,26 +108,36 @@ struct SidebarView: View {
                     ForEach(sortedFiles(for: project)) { file in
                         fileRow(file)
                             .tag(file)
+                            .onHover { isHovered in
+                                hoveredFileID = isHovered ? file.id : (hoveredFileID == file.id ? nil : hoveredFileID)
+                            }
+                            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                                handleDrop(providers, project: project, file: file, createNewFile: false)
+                            }
                             .contextMenu {
-                                Button("Rename") { fileToEdit = file }
+                                Button("Rename File") { fileToEdit = file }
                                 Divider()
-                                Button("Delete", role: .destructive) {
+                                Button("Delete File", role: .destructive) {
                                     fileToDelete = file
-                                    showDeleteFileAlert = true
                                 }
                             }
                     }
                 } label: {
                     projectLabel(project)
                 }
+                .onHover { isHovered in
+                    hoveredProjectID = isHovered ? project.id : (hoveredProjectID == project.id ? nil : hoveredProjectID)
+                }
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    handleDrop(providers, project: project, file: nil, createNewFile: true)
+                }
                 .contextMenu {
                     Button("Add File") { showCreateFileSheet = project }
                     Divider()
-                    Button("Edit") { projectToEdit = project }
+                    Button("Rename Project") { projectToEdit = project }
                     Divider()
-                    Button("Delete", role: .destructive) {
+                    Button("Delete Project", role: .destructive) {
                         projectToDelete = project
-                        showDeleteProjectAlert = true
                     }
                 }
             }
@@ -166,6 +186,23 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .help("Add file to \(project.name)")
+
+            Menu {
+                Button("Add File") { showCreateFileSheet = project }
+                Button("Rename Project") { projectToEdit = project }
+                Divider()
+                Button("Delete Project", role: .destructive) {
+                    projectToDelete = project
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .opacity(hoveredProjectID == project.id ? 1 : 0.55)
+            .help("Project actions")
         }
     }
 
@@ -183,7 +220,40 @@ struct SidebarView: View {
             Text("\((file.entries ?? []).count)")
                 .font(AppTheme.Fonts.caption)
                 .foregroundStyle(AppTheme.textTertiary)
+
+            Menu {
+                Button("Rename File") { fileToEdit = file }
+                Divider()
+                Button("Delete File", role: .destructive) {
+                    fileToDelete = file
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .opacity(hoveredFileID == file.id || selectedFile?.id == file.id ? 1 : 0.55)
+            .help("File actions")
         }
+    }
+
+    private func handleDrop(
+        _ providers: [NSItemProvider],
+        project: Project?,
+        file: EnvFile?,
+        createNewFile: Bool
+    ) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+            guard let data = item as? Data,
+                  let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+            Task { @MainActor in
+                onImportFile(url, project, file, createNewFile)
+            }
+        }
+        return true
     }
 
     private func deleteProject(_ project: Project) {

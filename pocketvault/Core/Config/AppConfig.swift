@@ -1,8 +1,8 @@
 import Foundation
 
 enum AppConfig {
-    static let bundleIdentifier = "app.pocketvault"
-    static let keychainServiceName = "app.pocketvault.keychain"
+    static let bundleIdentifier = Bundle.main.bundleIdentifier ?? "app.pocketvault"
+    static let keychainServiceName = "\(bundleIdentifier).keychain"
     static let vaultKeyIdentifier = "pocketvault.master.vaultkey"
     static let canonicalVaultFileName = "PocketVault.vault"
 

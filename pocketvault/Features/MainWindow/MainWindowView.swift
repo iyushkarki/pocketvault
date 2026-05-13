@@ -5,15 +5,25 @@ import UniformTypeIdentifiers
 struct MainWindowView: View {
     @Environment(LockManager.self) private var lockManager
     @Environment(SyncCoordinator.self) private var syncCoordinator
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \Project.updatedAt, order: .reverse) private var projects: [Project]
     @AppStorage(AppConfig.UserDefaultsKey.lastSelectedFileID) private var lastSelectedFileID = ""
     @State private var selectedFile: EnvFile?
+    @State private var pendingSelectedFile: EnvFile?
+    @State private var rawEditorHasUnappliedChanges = false
+    @State private var showDiscardRawSelectionAlert = false
     @State private var expandedProjectIDs: Set<UUID> = []
     @State private var viewModel = EnvEditorViewModel()
     @State private var searchText = ""
     @State private var showImportSheet = false
     @State private var showCreateProjectSheet = false
+    @State private var showCreateFileSheet: Project?
+    @State private var fileToEdit: EnvFile?
+    @State private var fileToDelete: EnvFile?
     @State private var droppedFileURL: URL?
+    @State private var droppedTargetProject: Project?
+    @State private var droppedTargetFile: EnvFile?
+    @State private var droppedCreatesNewFile = true
     @State private var exportError: String?
     @State private var copyFeedback = false
     @State private var showErrorAlert = false
@@ -66,7 +76,14 @@ struct MainWindowView: View {
     }
 
     private var isPresentingUserSheet: Bool {
-        showImportSheet || showVaultExport || showVaultImport || showCreateProjectSheet
+        showImportSheet || showVaultExport || showVaultImport || showCreateProjectSheet || showCreateFileSheet != nil || fileToEdit != nil || fileToDelete != nil
+    }
+
+    private var selectedFileBinding: Binding<EnvFile?> {
+        Binding(
+            get: { selectedFile },
+            set: { attemptSelectFile($0) }
+        )
     }
 
     var body: some View {
@@ -91,81 +108,38 @@ struct MainWindowView: View {
             if shouldShowExportReminder {
                 exportReminderBanner
             }
-            NavigationSplitView {
-            SidebarView(
-                selectedFile: $selectedFile,
-                expandedProjectIDs: $expandedProjectIDs,
-                viewModel: viewModel
-            )
-            .navigationSplitViewColumnWidth(
-                min: AppTheme.Sizing.sidebarMinWidth,
-                ideal: AppTheme.Sizing.sidebarWidth,
-                max: 300
-            )
+            mainNavigation
+        }
+    }
+
+    private var mainNavigation: some View {
+        NavigationSplitView {
+            sidebarContent
         } detail: {
             detailView
         }
         .searchable(text: $searchText, prompt: "Search keys...")
         .navigationTitle("Pocket Vault")
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    Button("Import .env File...") {
-                        showImportSheet = true
-                    }
-                    .keyboardShortcut("i", modifiers: .command)
-
-                    Divider()
-
-                    Button("Import Encrypted Backup...") {
-                        showVaultImport = true
-                    }
-                } label: {
-                    Label("Import", systemImage: "square.and.arrow.down")
-                }
-                .accessibilityLabel("Import")
-
-                Menu {
-                    if let file = selectedFile {
-                        Button("Export File...") {
-                            exportFile(file)
-                        }
-                        .keyboardShortcut("e", modifiers: .command)
-                        if let project = file.project {
-                            Button("Export Project Files...") {
-                                exportProject(project)
-                            }
-                        }
-                        Divider()
-                        Button(copyFeedback ? "Copied!" : "Copy File as KEY=VALUE") {
-                            copyAll(file)
-                        }
-                        .disabled(copyFeedback)
-                    } else {
-                        Text("Select a file to export")
-                    }
-
-                    Divider()
-
-                    Button("Export Encrypted Backup...") {
-                        showVaultExport = true
-                    }
-                } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
-                }
-                .accessibilityLabel("Export")
-
-                Button {
-                    viewModel.hideAllValues()
-                    lockManager.lock()
-                } label: {
-                    Label("Lock", systemImage: "lock.fill")
-                }
-                .accessibilityLabel("Lock vault")
-                .keyboardShortcut("l", modifiers: .command)
-            }
+            mainToolbar
         }
-        .alert("Error", isPresented: $showErrorAlert, presenting: viewModel.errorMessage) { _ in
+        .overlay(alignment: .topLeading) {
+            presentationHost
+        }
+    }
+
+    private var presentationHost: some View {
+        ZStack {
+            alertHost
+            sheetHost
+            eventHost
+        }
+        .frame(width: 0, height: 0)
+    }
+
+    private var alertHost: some View {
+        Color.clear
+            .alert("Error", isPresented: $showErrorAlert, presenting: viewModel.errorMessage) { _ in
             Button("OK") { viewModel.errorMessage = nil }
         } message: { message in
             Text(message)
@@ -175,6 +149,20 @@ struct MainWindowView: View {
         } message: { message in
             Text(message)
         }
+        .alert("Discard Raw Changes?", isPresented: $showDiscardRawSelectionAlert, presenting: pendingSelectedFile) { file in
+            Button("Keep Editing", role: .cancel) { pendingSelectedFile = nil }
+            Button("Discard Changes", role: .destructive) {
+                rawEditorHasUnappliedChanges = false
+                selectedFile = file
+                pendingSelectedFile = nil
+            }
+        } message: { _ in
+            Text("The raw editor has unapplied changes. Apply or revert them before switching files, or discard them now.")
+        }
+    }
+
+    private var sheetHost: some View {
+        Color.clear
         .onChange(of: viewModel.errorMessage) { _, newValue in
             if newValue != nil { showErrorAlert = true }
         }
@@ -195,8 +183,13 @@ struct MainWindowView: View {
             restoreSelectionIfNeeded()
         }
         .sheet(isPresented: $showImportSheet) {
-            ImportView(fileURL: droppedFileURL)
-                .onDisappear { droppedFileURL = nil }
+            ImportView(
+                fileURL: droppedFileURL,
+                preselectedProject: droppedTargetProject,
+                preselectedFile: droppedTargetFile,
+                createNewFile: droppedCreatesNewFile
+            )
+            .onDisappear { clearImportTarget() }
         }
         .sheet(isPresented: $showVaultExport) {
             VaultExportView()
@@ -207,6 +200,24 @@ struct MainWindowView: View {
         .sheet(isPresented: $showCreateProjectSheet) {
             CreateProjectSheet { file in
                 selectedFile = file
+            }
+        }
+        .sheet(item: $showCreateFileSheet) { project in
+            CreateFileSheet(project: project) { file in
+                selectedFile = file
+            }
+        }
+        .sheet(item: $fileToEdit) { file in
+            EditFileSheet(file: file)
+        }
+        .sheet(item: $fileToDelete) { file in
+            ConfirmDeleteSheet(
+                title: "Delete File",
+                itemName: file.name,
+                message: "This permanently deletes \"\(file.name)\" and all stored environment values in the file.",
+                confirmButtonTitle: "Delete File"
+            ) {
+                deleteFile(file)
             }
         }
         .sheet(isPresented: conflictBinding) {
@@ -227,14 +238,118 @@ struct MainWindowView: View {
                 }
             }
         }
+    }
+
+    private var eventHost: some View {
+        Color.clear
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            handleDrop(providers)
+            handleDrop(providers, project: nil, file: nil, createNewFile: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pocketVaultNewProject)) { _ in
+            showCreateProjectSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pocketVaultNewFile)) { _ in
+            if let project = selectedFile?.project ?? projects.first {
+                showCreateFileSheet = project
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pocketVaultRenameFile)) { _ in
+            if let selectedFile {
+                fileToEdit = selectedFile
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pocketVaultDeleteFile)) { _ in
+            if let selectedFile {
+                fileToDelete = selectedFile
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pocketVaultImportEnvFile)) { _ in
+            prepareImport(nil)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pocketVaultLock)) { _ in
+            lockVault()
         }
         .onAppear {
             viewModel.lockManager = lockManager
             restoreSelectionIfNeeded()
         }
+    }
+
+    private var sidebarContent: some View {
+        SidebarView(
+            selectedFile: selectedFileBinding,
+            expandedProjectIDs: $expandedProjectIDs,
+            viewModel: viewModel,
+            onImportFile: prepareImport
+        )
+        .navigationSplitViewColumnWidth(
+            min: AppTheme.Sizing.sidebarMinWidth,
+            ideal: AppTheme.Sizing.sidebarWidth,
+            max: 300
+        )
+    }
+
+    @ToolbarContentBuilder
+    private var mainToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            importMenu
+            exportMenu
+            Button {
+                lockVault()
+            } label: {
+                Label("Lock", systemImage: "lock.fill")
+            }
+            .accessibilityLabel("Lock vault")
+            .keyboardShortcut("l", modifiers: .command)
         }
+    }
+
+    private var importMenu: some View {
+        Menu {
+            Button("Import .env File...") { prepareImport(nil) }
+                .keyboardShortcut("i", modifiers: .command)
+
+            Divider()
+
+            Button("Import Encrypted Backup...") {
+                showVaultImport = true
+            }
+        } label: {
+            Label("Import", systemImage: "square.and.arrow.down")
+        }
+        .accessibilityLabel("Import")
+    }
+
+    private var exportMenu: some View {
+        Menu {
+            if let file = selectedFile {
+                Button("Export File...") {
+                    exportFile(file)
+                }
+                .keyboardShortcut("e", modifiers: .command)
+                if let project = file.project {
+                    Button("Export Project Files...") {
+                        exportProject(project)
+                    }
+                }
+                Divider()
+                Button(copyFeedback ? "Copied!" : "Copy File as KEY=VALUE") {
+                    copyAll(file)
+                }
+                .disabled(copyFeedback)
+            } else {
+                Text("Select a file to export")
+            }
+
+            Divider()
+
+            Button("Export Encrypted Backup...") {
+                showVaultExport = true
+            }
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+        .accessibilityLabel("Export")
     }
 
     private var exportReminderBanner: some View {
@@ -265,7 +380,16 @@ struct MainWindowView: View {
     @ViewBuilder
     private var detailView: some View {
         if let file = selectedFile {
-            DetailEditorView(file: file, viewModel: viewModel, searchText: searchText)
+            DetailEditorView(
+                file: file,
+                viewModel: viewModel,
+                searchText: searchText,
+                rawEditorHasUnappliedChanges: $rawEditorHasUnappliedChanges,
+                onRenameFile: { fileToEdit = file },
+                onDeleteFile: {
+                    fileToDelete = file
+                }
+            )
         } else if projects.isEmpty {
             VStack(spacing: AppTheme.Spacing.lg) {
                 Image(systemName: "lock.shield.fill")
@@ -372,22 +496,74 @@ struct MainWindowView: View {
         }
     }
 
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+    private func prepareImport(
+        _ url: URL?,
+        project: Project? = nil,
+        file: EnvFile? = nil,
+        createNewFile: Bool = true
+    ) {
+        droppedFileURL = url
+        droppedTargetProject = project
+        droppedTargetFile = file
+        droppedCreatesNewFile = file == nil ? createNewFile : false
+        showImportSheet = true
+    }
+
+    private func clearImportTarget() {
+        droppedFileURL = nil
+        droppedTargetProject = nil
+        droppedTargetFile = nil
+        droppedCreatesNewFile = true
+    }
+
+    private func handleDrop(
+        _ providers: [NSItemProvider],
+        project: Project?,
+        file: EnvFile?,
+        createNewFile: Bool
+    ) -> Bool {
         guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: "public.file-url") { item, _ in
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
             guard let data = item as? Data,
                   let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
             Task { @MainActor in
-                droppedFileURL = url
-                showImportSheet = true
+                prepareImport(url, project: project, file: file, createNewFile: createNewFile)
             }
         }
         return true
     }
 
+    private func deleteFile(_ file: EnvFile) {
+        if selectedFile?.id == file.id {
+            selectedFile = nil
+        }
+        do {
+            try viewModel.deleteFile(file, context: modelContext)
+        } catch {
+            viewModel.errorMessage = "Failed to delete file: \(error.localizedDescription)"
+        }
+        fileToDelete = nil
+    }
+
+    private func lockVault() {
+        viewModel.hideAllValues()
+        lockManager.lock()
+    }
+
+    private func attemptSelectFile(_ file: EnvFile?) {
+        guard rawEditorHasUnappliedChanges, selectedFile?.id != file?.id else {
+            selectedFile = file
+            return
+        }
+
+        pendingSelectedFile = file
+        showDiscardRawSelectionAlert = true
+    }
+
     private func syncSelectionState() {
         guard let selectedFile else {
             lastSelectedFileID = ""
+            rawEditorHasUnappliedChanges = false
             return
         }
 
@@ -402,15 +578,13 @@ struct MainWindowView: View {
             selectedFile = nil
             expandedProjectIDs.removeAll()
             lastSelectedFileID = ""
+            rawEditorHasUnappliedChanges = false
             return
         }
 
         if preferStoredSelection,
            let restoredFile = allFilesByRecency.first(where: { $0.id.uuidString == lastSelectedFileID }) {
-            selectedFile = restoredFile
-            if let projectID = restoredFile.project?.id {
-                expandedProjectIDs.insert(projectID)
-            }
+            restoreSelection(restoredFile)
             return
         }
 
@@ -423,15 +597,18 @@ struct MainWindowView: View {
         }
 
         if let restoredFile = allFilesByRecency.first(where: { $0.id.uuidString == lastSelectedFileID }) {
-            selectedFile = restoredFile
-            if let projectID = restoredFile.project?.id {
-                expandedProjectIDs.insert(projectID)
-            }
+            restoreSelection(restoredFile)
             return
         }
 
-        selectedFile = allFilesByRecency.first
-        if let projectID = selectedFile?.project?.id {
+        if let firstFile = allFilesByRecency.first {
+            restoreSelection(firstFile)
+        }
+    }
+
+    private func restoreSelection(_ file: EnvFile) {
+        attemptSelectFile(file)
+        if selectedFile?.id == file.id, let projectID = file.project?.id {
             expandedProjectIDs.insert(projectID)
         }
     }
@@ -454,14 +631,20 @@ private struct DetailEditorView: View {
     @Bindable var viewModel: EnvEditorViewModel
     @Environment(\.modelContext) private var modelContext
     let searchText: String
+    @Binding var rawEditorHasUnappliedChanges: Bool
+    let onRenameFile: () -> Void
+    let onDeleteFile: () -> Void
 
     @State private var showAddSheet = false
     @State private var entryToEdit: EnvEntry?
     @State private var entryToDelete: EnvEntry?
     @State private var showDeleteEntryAlert = false
     @State private var viewMode: ViewMode = .table
+    @State private var pendingViewMode: ViewMode?
+    @State private var showDiscardRawModeAlert = false
     @State private var rawText = ""
     @State private var rawTextSnapshot = ""
+    @State private var rawErrorMessage: String?
 
     private var sortedEntries: [EnvEntry] {
         let entries = (file.entries ?? []).sorted { $0.sortOrder < $1.sortOrder }
@@ -471,6 +654,17 @@ private struct DetailEditorView: View {
 
     private var duplicateKeys: Set<String> {
         viewModel.duplicateKeys(in: file)
+    }
+
+    private var hasRawChanges: Bool {
+        rawText != rawTextSnapshot
+    }
+
+    private var viewModeBinding: Binding<ViewMode> {
+        Binding(
+            get: { viewMode },
+            set: { attemptChangeViewMode($0) }
+        )
     }
 
     var body: some View {
@@ -500,6 +694,18 @@ private struct DetailEditorView: View {
             }
         } message: { entry in
             Text("Delete \"\(entry.key)\"? The stored value will be permanently removed.")
+        }
+        .alert("Discard Raw Changes?", isPresented: $showDiscardRawModeAlert, presenting: pendingViewMode) { mode in
+            Button("Keep Editing", role: .cancel) { pendingViewMode = nil }
+            Button("Discard Changes", role: .destructive) {
+                rawText = rawTextSnapshot
+                rawErrorMessage = nil
+                rawEditorHasUnappliedChanges = false
+                viewMode = mode
+                pendingViewMode = nil
+            }
+        } message: { _ in
+            Text("The raw editor has unapplied changes. Apply or revert them before switching views, or discard them now.")
         }
         .onChange(of: file) {
             viewModel.hideAllValues()
@@ -555,7 +761,21 @@ private struct DetailEditorView: View {
 
             Spacer()
 
-            Picker("View", selection: $viewMode) {
+            Button(action: onRenameFile) {
+                Label("Rename File", systemImage: "pencil")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help("Rename file")
+
+            Button(role: .destructive, action: onDeleteFile) {
+                Label("Delete File", systemImage: "trash")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help("Delete file")
+
+            Picker("View", selection: viewModeBinding) {
                 ForEach(ViewMode.allCases, id: \.self) { mode in
                     mode.label.tag(mode)
                 }
@@ -586,18 +806,26 @@ private struct DetailEditorView: View {
                 .padding(AppTheme.Spacing.sm)
                 .onChange(of: rawText) { _, _ in
                     viewModel.lockManager?.recordActivity()
+                    rawEditorHasUnappliedChanges = hasRawChanges
+                    rawErrorMessage = nil
                 }
 
-            if rawText != rawTextSnapshot {
+            if hasRawChanges || rawErrorMessage != nil {
                 HStack {
-                    Text("Unsaved changes")
+                    Text(rawErrorMessage ?? "Unsaved changes")
                         .font(AppTheme.Fonts.caption)
-                        .foregroundStyle(AppTheme.warning)
+                        .foregroundStyle(rawErrorMessage == nil ? AppTheme.warning : AppTheme.error)
+                        .lineLimit(2)
                     Spacer()
-                    Button("Revert") { rawText = rawTextSnapshot }
+                    Button("Revert") {
+                        rawText = rawTextSnapshot
+                        rawErrorMessage = nil
+                        rawEditorHasUnappliedChanges = false
+                    }
                         .buttonStyle(.bordered)
                     Button("Apply") { applyRawChanges() }
                         .buttonStyle(.borderedProminent)
+                        .disabled(!hasRawChanges)
                 }
                 .padding(.horizontal, AppTheme.Spacing.lg)
                 .padding(.vertical, AppTheme.Spacing.sm)
@@ -610,15 +838,34 @@ private struct DetailEditorView: View {
             let text = try viewModel.rawText(for: file)
             rawText = text
             rawTextSnapshot = text
+            rawErrorMessage = nil
+            rawEditorHasUnappliedChanges = false
         } catch {
             viewModel.errorMessage = "Failed to load raw text: \(error.localizedDescription)"
         }
     }
 
     private func applyRawChanges() {
+        let result = EnvParser.parse(rawText)
+        if !result.errors.isEmpty {
+            rawErrorMessage = result.errors.map { "Line \($0.lineNumber): \($0.message)" }.joined(separator: "\n")
+            return
+        }
+
         if viewModel.applyRawText(rawText, to: file, context: modelContext) {
             loadRawText()
         }
+    }
+
+    private func attemptChangeViewMode(_ mode: ViewMode) {
+        guard viewMode != mode else { return }
+        guard viewMode == .raw, hasRawChanges else {
+            viewMode = mode
+            return
+        }
+
+        pendingViewMode = mode
+        showDiscardRawModeAlert = true
     }
 
     private var entryList: some View {
